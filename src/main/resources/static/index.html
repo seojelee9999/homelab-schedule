@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#175d50">
+  <title>차곡 · 일정 관리</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">본문으로 건너뛰기</a>
+  <header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">▦</span><span>차곡<span class="brand-caption">SCHEDULE</span></span></div><span class="timezone"><span aria-hidden="true">◷</span> 서울 · KST (UTC+09:00)</span></header>
+  <main id="main">
+    <section class="intro" aria-labelledby="page-title"><div><p class="eyebrow">MAKE ROOM FOR YOUR DAY</p><h1 id="page-title">중요한 순간을,<br>차곡차곡.</h1><p class="intro-copy">일정은 한눈에, 알림은 제때에.<br class="mobile-only"> 오늘의 계획을 가볍게 정리하세요.</p></div><div class="today-card"><span>오늘, 서울</span><strong id="today">—</strong><span class="today-note">모든 일정과 알림은 서울 시간 기준입니다.</span></div></section>
+    <div id="message" class="message" role="status" aria-live="polite" hidden></div>
+    <section class="stats" aria-label="일정 요약"><div><span>다가오는 일정</span><strong id="upcoming-count">—</strong></div><div><span>오늘의 일정</span><strong id="today-count">—</strong></div><div><span>확인이 필요한 알림</span><strong id="attention-count">—</strong></div></section>
+    <div class="workspace">
+      <section class="panel editor" aria-labelledby="form-title"><div class="section-heading"><div><p class="eyebrow">PLAN YOUR NEXT</p><h2 id="form-title">새 일정 만들기</h2></div><span class="step-mark" aria-hidden="true">＋</span></div><p class="muted">기억하고 싶은 순간을 남겨보세요.</p>
+        <form id="schedule-form"><fieldset id="form-fields"><label for="title">일정 제목 <span class="required">필수</span></label><input id="title" name="title" required maxlength="200" placeholder="예: 주간 프로젝트 회의" autocomplete="off">
+          <label for="description">메모 <span class="optional">선택</span></label><textarea id="description" name="description" maxlength="2000" rows="3" placeholder="장소, 준비물 등 필요한 내용을 적어주세요."></textarea>
+          <label for="startsAt">일정 시작 <span class="required">필수</span></label><input id="startsAt" name="startsAt" type="datetime-local" required aria-describedby="time-help">
+          <label for="remindAt">Discord 알림 <span class="required">필수</span></label><input id="remindAt" name="remindAt" type="datetime-local" required aria-describedby="time-help reminder-help"><p id="time-help" class="field-help">Asia/Seoul · 기기의 시간대와 관계없이 서울 시간으로 저장됩니다.</p><p id="reminder-help" class="field-help">알림 시각은 일정 시작 이전 또는 같은 시각으로 지정하세요.</p>
+          <div id="edit-note" class="inline-note" hidden>수정 내용을 저장하면 알림 예약도 갱신됩니다.</div>
+          <div class="form-actions"><button class="primary" id="save" type="submit">일정 등록하기 <span aria-hidden="true">↗</span></button><button id="cancel-edit" class="secondary" type="button" hidden>수정 취소</button></div>
+        </fieldset></form>
+        <div class="delivery-note"><span aria-hidden="true">◈</span><p><strong>알림은 Discord로 전달돼요</strong><br>발송 상태와 확인이 필요한 알림은 오른쪽 알림 이력에서 확인할 수 있어요.</p></div>
+      </section>
+      <section class="panel collection" aria-labelledby="collection-title"><div class="section-heading"><div><p class="eyebrow">YOUR PERSONAL TIMELINE</p><h2 id="collection-title">나의 일정</h2></div><button class="secondary compact" id="refresh" type="button">↻ 새로고침</button></div>
+        <div class="tabs" role="tablist" aria-label="보기 선택"><button id="schedule-tab" type="button" role="tab" aria-selected="true" aria-controls="schedule-panel" tabindex="0">일정 목록</button><button id="history-tab" type="button" role="tab" aria-selected="false" aria-controls="history-panel" tabindex="-1">알림 이력</button></div>
+        <div id="schedule-panel" role="tabpanel" aria-labelledby="schedule-tab"><div class="filters"><label class="search"><span class="sr-only">일정 검색</span><input id="search" type="search" placeholder="제목이나 메모 검색"></label><label><span class="sr-only">일정 기간</span><select id="period"><option value="upcoming">다가오는 일정</option><option value="all">전체 일정</option><option value="past">지난 일정</option></select></label></div><p id="list-summary" class="list-summary" aria-live="polite">일정을 불러오는 중입니다.</p><div id="schedule-list" class="items" aria-busy="true"></div></div>
+        <div id="history-panel" role="tabpanel" aria-labelledby="history-tab" hidden><div class="history-intro"><strong>발송 결과를 확인하세요</strong><p>‘결과 확인 필요’는 전송 여부가 확실하지 않은 상태입니다. Discord 채널을 먼저 확인한 뒤 처리해 주세요.</p></div><div id="history-list" class="items" aria-busy="true"></div></div>
+      </section>
+    </div>
+    <footer><span class="footer-brand">차곡</span><span>일상에 여유를 더하는 작은 계획.</span><span>Asia/Seoul</span></footer>
+  </main>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description"><form method="dialog"><p class="eyebrow">ONE MORE CHECK</p><h2 id="confirm-title">확인</h2><p id="confirm-description"></p><label id="risk-label" class="risk-label" hidden><input id="risk-check" type="checkbox"><span>Discord 채널을 확인했으며, 재시도로 같은 알림이 중복 발송될 수 있음을 이해합니다.</span></label><div class="dialog-actions"><button class="secondary" value="cancel" autofocus>취소</button><button class="primary" id="confirm-action" value="confirm">확인</button></div></form></dialog>
+</body>
+</html>

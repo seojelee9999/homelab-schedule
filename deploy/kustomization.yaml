@@ -1,0 +1,25 @@
+{
+  "apiVersion": "kustomize.config.k8s.io/v1beta1",
+  "kind": "Kustomization",
+  "namespace": "schedule",
+  "resources": [
+    "namespace.yaml",
+    "ghcr.yaml",
+    "secrets.yaml",
+    "postgres.yaml",
+    "app.yaml",
+    "httproute.yaml"
+  ],
+  "images": [
+    {
+      "name": "ghcr.io/seojelee9999/homelab-schedule",
+      "newTag": "bootstrap"
+    }
+  ],
+  "replicas": [
+    {
+      "name": "schedule",
+      "count": 0
+    }
+  ]
+}

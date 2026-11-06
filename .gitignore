@@ -1,0 +1,11 @@
+target/
+build/
+.gradle/
+data/
+.idea/
+*.iml
+.DS_Store
+.env
+.env.*
+*.log
+__pycache__/

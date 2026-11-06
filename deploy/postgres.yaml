@@ -1,0 +1,116 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: schedule-postgres
+spec:
+  clusterIP: None
+  selector:
+    app: schedule-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: schedule-postgres-data
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn-database
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: schedule-postgres-init
+data:
+  01-create-app.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    psql --username "$POSTGRES_USER" --dbname postgres --set=ON_ERROR_STOP=1 <<'SQL'
+    \getenv app_password DB_PASSWORD
+    CREATE ROLE schedule_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD :'app_password';
+    CREATE DATABASE schedule OWNER schedule_app;
+    REVOKE ALL ON DATABASE schedule FROM PUBLIC;
+    \connect schedule
+    REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+    ALTER SCHEMA public OWNER TO schedule_app;
+    SQL
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: schedule-postgres
+spec:
+  serviceName: schedule-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: schedule-postgres
+  template:
+    metadata:
+      labels:
+        app: schedule-postgres
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: postgres
+          image: postgres:17
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: schedule-postgres-admin
+                  key: POSTGRES_ADMIN_PASSWORD
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: schedule-app
+                  key: DB_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          startupProbe:
+            exec:
+              command: [sh, -c, 'pg_isready -h 127.0.0.1 -U postgres -d schedule']
+            failureThreshold: 60
+            periodSeconds: 5
+          readinessProbe:
+            exec:
+              command: [sh, -c, 'pg_isready -h 127.0.0.1 -U postgres -d schedule']
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: [sh, -c, 'pg_isready -h 127.0.0.1 -U postgres -d schedule']
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: schedule-postgres-data
+        - name: init
+          configMap:
+            name: schedule-postgres-init

@@ -1,0 +1,158 @@
+name: Test, publish, and update GitOps
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'deploy/kustomization.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: schedule-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-admin-only-password
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DB_URL: jdbc:postgresql://localhost:5432/schedule
+      DB_USERNAME: schedule_app
+      DB_PASSWORD: ci-only-password
+      DISCORD_WEBHOOK_URL: https://discord.com/api/webhooks/123/test-token
+      WORKER_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - name: Install validation dependency
+        run: python3 -m pip install 'PyYAML==6.0.3'
+      - name: Initialize PostgreSQL using the production init script
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: '5432'
+          POSTGRES_USER: postgres
+          PGPASSWORD: ci-admin-only-password
+        run: python3 scripts/init_ci_database.py
+      - name: Test and package
+        run: gradle --no-daemon test bootJar
+      - name: Check frontend JavaScript
+        run: |
+          node --check src/main/resources/static/app.js
+          node scripts/frontend_smoke.cjs
+          SMOKE_BASE_URL=http://localhost:8080/ node scripts/frontend_smoke.cjs
+      - name: Validate deployment contracts
+        run: python3 scripts/validate_deployment.py
+      - name: Build and smoke-test the container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" --label "org.opencontainers.image.revision=$GITHUB_SHA" -t schedule:ci .
+          docker run -d --name schedule-ci --network host --read-only --tmpfs /tmp:uid=10001,gid=10001,mode=1777 \
+            -e DB_URL -e DB_USERNAME -e DB_PASSWORD -e WORKER_ENABLED=false -e SERVER_PORT=18080 schedule:ci
+          trap 'docker logs schedule-ci; docker rm -f schedule-ci' EXIT
+          python3 scripts/smoke_api.py
+          docker save schedule:ci -o /tmp/schedule-image.tar
+      - name: Preserve the tested image
+        uses: actions/upload-artifact@v4
+        with:
+          name: schedule-image
+          path: /tmp/schedule-image.tar
+          retention-days: 1
+      - name: Preserve test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            build/reports/tests/test
+            build/test-results/test
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: schedule-image
+          path: /tmp
+      - name: Push the exact image that passed the tests
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$GITHUB_SHA"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          trap 'docker logout ghcr.io' EXIT
+          docker load -i /tmp/schedule-image.tar
+          docker tag schedule:ci "$image"
+          docker push "$image"
+      - name: Update only when no newer source commit exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$GITHUB_SHA"
+          # Preserve the tested updater while checking out the latest branch.
+          updater=$(mktemp -d)
+          trap 'rm -rf "$updater"' EXIT
+          cp scripts/update_image.py scripts/prepare_deployment.py "$updater/"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3; do
+            git fetch origin main
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo 'Source history changed; skipping deployment.'
+              exit 0
+            fi
+            # Inspect every newer commit, including changes later reverted.
+            newer=$(git rev-list "$GITHUB_SHA..origin/main" -- . ':!deploy/kustomization.yaml')
+            if [[ -n "$newer" ]]; then
+              echo 'Newer source or configuration exists; leave deployment to its workflow.'
+              exit 0
+            fi
+            git checkout -B gitops-update origin/main
+            python3 "$updater/update_image.py" "$image"
+            kubectl kustomize deploy > /dev/null
+            git add deploy/kustomization.yaml
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m "deploy: schedule $GITHUB_SHA"
+            # Normal fast-forward push rejects races. Never force push or rebase stale edits.
+            if git push origin HEAD:main; then exit 0; fi
+            sleep 2
+          done
+          echo 'Update raced or branch permissions blocked it; rerun after resolving.' >&2
+          exit 1

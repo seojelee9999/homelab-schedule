@@ -1,0 +1,12 @@
+diff --git a/apps/schedule.json b/apps/schedule.json
+new file mode 100644
+--- /dev/null
++++ b/apps/schedule.json
+@@ -0,0 +1,7 @@
++{
++  "appName": "schedule",
++  "repoURL": "https://github.com/seojelee9999/homelab-schedule.git",
++  "targetRevision": "main",
++  "manifest_path": "deploy",
++  "namespace": "schedule"
++}
