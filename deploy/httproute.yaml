@@ -15,7 +15,7 @@ spec:
     - matches:
         - path:
             type: Exact
-            value: /day
+            value: /plan
       filters:
         - type: RequestRedirect
           requestRedirect:
@@ -23,12 +23,12 @@ spec:
             port: 443
             path:
               type: ReplaceFullPath
-              replaceFullPath: /day/
+              replaceFullPath: /plan/
             statusCode: 302
     - matches:
         - path:
             type: PathPrefix
-            value: /day
+            value: /plan
       filters:
         - type: URLRewrite
           urlRewrite:

@@ -47,7 +47,7 @@ def check_resources(documents):
     assert env["DB_URL"]["value"] == "jdbc:postgresql://schedule-postgres:5432/schedule"
     assert env["DB_USERNAME"]["value"] == "schedule_app"
     assert "POSTGRES_ADMIN_PASSWORD" not in env
-    for key, expected in {"NAME": "DAYSESSION", "PATH": "/day", "SECURE": "true", "SAMESITE": "lax"}.items():
+    for key, expected in {"NAME": "DAYSESSION", "PATH": "/plan", "SECURE": "true", "SAMESITE": "lax"}.items():
         assert env["SERVER_SERVLET_SESSION_COOKIE_" + key]["value"] == expected
     assert container["ports"][0]["containerPort"] == 8080
     for probe, suffix in [("startupProbe", "liveness"), ("livenessProbe", "liveness"), ("readinessProbe", "readiness")]:
@@ -77,10 +77,10 @@ def check_resources(documents):
                                     "name": "tunnel-gateway", "namespace": "gateway-system", "sectionName": "http"}]
     assert route["hostnames"] == ["akibaha.shop"]
     redirect, rewrite = route["rules"]
-    assert redirect["matches"] == [{"path": {"type": "Exact", "value": "/day"}}]
+    assert redirect["matches"] == [{"path": {"type": "Exact", "value": "/plan"}}]
     assert redirect["filters"] == [{"type": "RequestRedirect", "requestRedirect": {
-        "scheme": "https", "port": 443, "path": {"type": "ReplaceFullPath", "replaceFullPath": "/day/"}, "statusCode": 302}}]
-    assert rewrite["matches"] == [{"path": {"type": "PathPrefix", "value": "/day"}}]
+        "scheme": "https", "port": 443, "path": {"type": "ReplaceFullPath", "replaceFullPath": "/plan/"}, "statusCode": 302}}]
+    assert rewrite["matches"] == [{"path": {"type": "PathPrefix", "value": "/plan"}}]
     assert rewrite["filters"] == [{"type": "URLRewrite", "urlRewrite": {
         "path": {"type": "ReplacePrefixMatch", "replacePrefixMatch": "/"}}}]
     assert rewrite["backendRefs"] == [{"group": "", "kind": "Service", "name": "schedule", "port": 8080, "weight": 1}]
@@ -131,7 +131,7 @@ def main():
         path.write_text(active.read_text())
         update(path, "ghcr.io/seojelee9999/homelab-schedule:" + "c"*40)
         assert json.loads(path.read_text())["replicas"] == [{"name": "schedule", "count": 2}]
-    print("PASS: deploy rendering, /day route, cookie scope, retention, secrets, bootstrap activation, registration and image update; no cluster access")
+    print("PASS: deploy rendering, /plan route, cookie scope, retention, secrets, bootstrap activation, registration and image update; no cluster access")
 
 
 if __name__ == "__main__":

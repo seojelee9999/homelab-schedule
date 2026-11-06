@@ -12,7 +12,7 @@
 - `src/main/resources/static/`: 한국어 일정 관리 화면과 알림 이력
 - `src/main/resources/db/migration/`: Flyway PostgreSQL 스키마
 - `src/test/`: 검증 및 PostgreSQL 통합 테스트
-- `deploy/`: Kubernetes 리소스, Kustomize 이미지 설정, /day HTTPRoute와 적용 설명
+- `deploy/`: Kubernetes 리소스, Kustomize 이미지 설정, /plan HTTPRoute와 적용 설명
 - `gitops/`: homelab-argocd ApplicationSet 등록 파일과 적용 패치
 - `scripts/`: 실제 이미지로 배포 파일 준비, 이미지 갱신, 배포 규칙 검증
 - `.github/workflows/ci.yml`: 테스트 → GHCR SHA 이미지 게시 → GitOps 이미지 태그 갱신
@@ -37,7 +37,7 @@ gradle --no-daemon test bootJar
 java -jar build/libs/schedule-1.0.0.jar
 ```
 
-브라우저에서 `http://localhost:8080`으로 접속합니다. 이 MVP에는 사용자 로그인·사용자별 권한이 없습니다. 로컬에서는 루트 경로로 접속하며 배포 시에는 기존 Gateway를 통해 `https://akibaha.shop/day/`로 접속합니다. 웹 변경 요청에는 CSRF 토큰이 필요합니다. CSRF는 로그인 기능을 대신하지 않습니다.
+브라우저에서 `http://localhost:8080`으로 접속합니다. 이 MVP에는 사용자 로그인·사용자별 권한이 없습니다. 로컬에서는 루트 경로로 접속하며 배포 시에는 기존 Gateway를 통해 `https://akibaha.shop/plan/`로 접속합니다. 웹 변경 요청에는 CSRF 토큰이 필요합니다. CSRF는 로그인 기능을 대신하지 않습니다.
 
 컨테이너 빌드:
 
@@ -75,15 +75,15 @@ git -C ~/homelab-argocd commit -m "Register schedule application"
 git -C ~/homelab-argocd push origin main
 ```
 
-`/day`는 HTTPS `/day/`로 이동하고, `/day/…`는 접두사를 제거해 `schedule/schedule:8080`으로 전달합니다. HTTPRoute는 앱의 deploy/에서 관리하고 기존 `gateway-system/tunnel-gateway`에 연결하므로 Gateway 리소스를 중복 생성하지 않습니다.
+`/plan`는 HTTPS `/plan/`로 이동하고, `/plan/…`는 접두사를 제거해 `schedule/schedule:8080`으로 전달합니다. HTTPRoute는 앱의 deploy/에서 관리하고 기존 `gateway-system/tunnel-gateway`에 연결하므로 Gateway 리소스를 중복 생성하지 않습니다.
 
 ```bash
 kubectl -n schedule get externalsecrets,pvc,pods
 kubectl -n schedule rollout status statefulset/schedule-postgres
 kubectl -n schedule rollout status deployment/schedule
 kubectl -n schedule describe httproute schedule
-curl -I https://akibaha.shop/day
-curl -I https://akibaha.shop/day/
+curl -I https://akibaha.shop/plan
+curl -I https://akibaha.shop/plan/
 ```
 
 PVC와 Namespace는 `Prune=false,Delete=false`, StorageClass는 기존 `Retain` 정책을 사용합니다. 직접 Namespace/PVC를 삭제하면 안 됩니다. PostgreSQL은 단일 인스턴스이며 복제 스토리지가 별도 DB 백업을 대신하지 않습니다. SSM 비밀번호 교체만으로 기존 DB 역할 비밀번호가 바뀌지 않습니다.

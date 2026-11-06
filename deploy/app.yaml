@@ -55,7 +55,7 @@ spec:
             - name: SERVER_SERVLET_SESSION_COOKIE_NAME
               value: DAYSESSION
             - name: SERVER_SERVLET_SESSION_COOKIE_PATH
-              value: /day
+              value: /plan
             - name: SERVER_SERVLET_SESSION_COOKIE_SECURE
               value: "true"
             - name: SERVER_SERVLET_SESSION_COOKIE_SAMESITE

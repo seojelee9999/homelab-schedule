@@ -24,7 +24,7 @@ Secret은 AWS SSM SecureString → ESO `external-secrets.io/v1` → `aws-paramet
 - 일정 변경과 알림 생성/취소를 같은 DB 트랜잭션에서 수행.
 - 영속 알림 큐와 시도 이력, Discord 메시지 ID 추적.
 - 반복 일정, 사용자 계정/권한, DB HA, 백업 자동화는 MVP에 포함하지 않는다.
-- 사용자 요청에 따라 `akibaha.shop/day`를 기존 Envoy Gateway에 연결한다. HTTPRoute는 schedule 네임스페이스에서 앱과 함께 관리하고 Service는 ClusterIP를 유지한다. 앱에는 로그인 기능이 없으며 CSRF는 인증 기능을 대신하지 않는다.
+- 사용자 요청에 따라 `akibaha.shop/plan`를 기존 Envoy Gateway에 연결한다. HTTPRoute는 schedule 네임스페이스에서 앱과 함께 관리하고 Service는 ClusterIP를 유지한다. 앱에는 로그인 기능이 없으며 CSRF는 인증 기능을 대신하지 않는다.
 
 ## 알림 보장과 복구
 
@@ -56,10 +56,10 @@ DB 앱 계정은 비관리자이며 관리자 비밀번호와 분리한다. 비�
 - [Discord Rate Limits](https://docs.discord.com/developers/topics/rate-limits)
 - [Kubernetes CronJob의 실행 제한](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/#job-creation)
 
-## CI/CD와 /day 경로
+## CI/CD와 /plan 경로
 
 `~/diet-app`의 테스트 → GHCR 전체 SHA → Kustomize 갱신 흐름과 `~/homelab-argocd`의 apps/*.json ApplicationSet 규칙을 따른다. PG17에서 운영 init 스크립트로 제한된 앱 계정을 만들고 통합 테스트를 수행한다. 컨테이너 smoke 후 저장한 이미지를 publish job이 그대로 로드·게시하므로 테스트와 배포 사이에 다시 빌드하지 않는다. 이미지 게시가 성공해야 deploy/kustomization.yaml의 SHA와 초기 앱 replicas=0을 2로 갱신한다. 더 최신 소스 커밋이 있거나 fast-forward push가 충돌하면 오래된 빌드의 배포 반영을 건너뛰거나 다시 검사한다.
 
 등록 파일은 appName=schedule, repoURL=https://github.com/seojelee9999/homelab-schedule.git, targetRevision=main, manifest_path=deploy, namespace=schedule이다. 현재 환경에서 homelab 저장소는 읽기 전용이므로 gitops/에 파일과 적용 패치를 제공한다. 실제 등록은 homelab 저장소에 반영된 뒤 성립한다.
 
-HTTPRoute의 Exact /day는 HTTPS 443의 /day/로 redirect하고, PathPrefix /day는 /로 rewrite한다. parentRefs는 gateway-system/tunnel-gateway의 http listener다. 해당 Gateway는 다른 네임스페이스의 Route를 이미 허용한다. 정적 파일은 상대 경로, fetch는 document.baseURI 기준 상대 API URL을 사용하여 로컬 /와 배포 /day/를 모두 지원한다. 배포 세션 쿠키는 DAYSESSION, Path=/day, Secure=true, SameSite=lax로 분리한다. 앱을 수정하기 위한 로그인은 별도 구현되지 않았다.
+HTTPRoute의 Exact /plan는 HTTPS 443의 /plan/로 redirect하고, PathPrefix /plan는 /로 rewrite한다. parentRefs는 gateway-system/tunnel-gateway의 http listener다. 해당 Gateway는 다른 네임스페이스의 Route를 이미 허용한다. 정적 파일은 상대 경로, fetch는 document.baseURI 기준 상대 API URL을 사용하여 로컬 /와 배포 /plan/를 모두 지원한다. 배포 세션 쿠키는 DAYSESSION, Path=/plan, Secure=true, SameSite=lax로 분리한다. 앱을 수정하기 위한 로그인은 별도 구현되지 않았다.

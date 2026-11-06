@@ -27,7 +27,7 @@ class Element {
 
 const nodes = new Map();
 const document = {
-  baseURI: process.env.SMOKE_BASE_URL || 'https://akibaha.shop/day/',
+  baseURI: process.env.SMOKE_BASE_URL || 'https://akibaha.shop/plan/',
   getElementById(id) {
     if (!nodes.has(id)) nodes.set(id, new Element());
     return nodes.get(id);
