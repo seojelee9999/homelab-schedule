@@ -104,6 +104,65 @@ class ScheduleIntegrationTest {
         mvc.perform(get("/app.js")).andExpect(status().isOk());
     }
 
+    @Test void batchCreatesEveryRowWithItsOwnReminderAndRejectsInvalidRowsAtomically() throws Exception {
+        LocalDateTime midnight = LocalDate.now(ScheduleService.SEOUL).plusDays(3).atTime(0, 30);
+        var first = new ScheduleService.Input("자정 작업", "전날 알림", midnight, midnight.minusHours(1), null);
+        var second = new ScheduleService.Input("오전 작업", "", midnight.plusHours(9), midnight.plusHours(8), null);
+        mvc.perform(post("/api/schedules/batch").with(csrf()).contentType("application/json")
+                .content(json.writeValueAsString(Map.of("items", List.of(first, second)))))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.ids.length()").value(2));
+        assertEquals(2, db.queryForObject("SELECT count(*) FROM schedules", Integer.class));
+        assertEquals(2, db.queryForObject("SELECT count(*) FROM notifications WHERE status='PENDING'", Integer.class));
+        assertEquals(first.remindAt().atZone(ScheduleService.SEOUL).toInstant(),
+                db.queryForObject("SELECT due_at FROM notifications WHERE title='자정 작업'", java.sql.Timestamp.class).toInstant());
+        var invalid = new ScheduleService.Input("invalid", "", midnight, midnight.plusHours(1), null);
+        mvc.perform(post("/api/schedules/batch").with(csrf()).contentType("application/json")
+                .content(json.writeValueAsString(Map.of("items", List.of(first, invalid)))))
+                .andExpect(status().isBadRequest());
+        assertEquals(2, db.queryForObject("SELECT count(*) FROM schedules", Integer.class));
+        for (String body : List.of("{\"items\":[]}", "{\"items\":[null]}",
+                json.writeValueAsString(Map.of("items", List.of(new ScheduleService.Input(" ", "", midnight, midnight, null)))),
+                json.writeValueAsString(Map.of("items", Collections.nCopies(49, first))))) {
+            mvc.perform(post("/api/schedules/batch").with(csrf()).contentType("application/json").content(body))
+                    .andExpect(status().isBadRequest());
+        }
+        mvc.perform(post("/api/schedules/batch").contentType("application/json")
+                .content(json.writeValueAsString(Map.of("items", List.of(first)))))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test void batchRollsBackEarlierRowsIfALaterDatabaseWriteFails() {
+        var good = input(null);
+        db.execute("CREATE FUNCTION reject_batch_row() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.title='reject' THEN RAISE EXCEPTION 'test'; END IF; RETURN NEW; END $$");
+        db.execute("CREATE TRIGGER reject_batch BEFORE INSERT ON schedules FOR EACH ROW EXECUTE FUNCTION reject_batch_row()");
+        try {
+            var bad = new ScheduleService.Input("reject", "", good.startsAt(), good.remindAt(), null);
+            assertThrows(RuntimeException.class, () -> schedules.createBatch(List.of(good, bad)));
+            assertEquals(0, db.queryForObject("SELECT count(*) FROM schedules", Integer.class));
+            assertEquals(0, db.queryForObject("SELECT count(*) FROM notifications", Integer.class));
+        } finally {
+            db.execute("DROP TRIGGER reject_batch ON schedules");
+            db.execute("DROP FUNCTION reject_batch_row()");
+        }
+    }
+
+    @Test void calendarRangeUsesSeoulBoundariesAndIsNotTruncatedAt500() throws Exception {
+        LocalDate first = LocalDate.now(ScheduleService.SEOUL).plusYears(1).withDayOfMonth(1);
+        LocalDateTime start = first.atStartOfDay();
+        schedules.create(new ScheduleService.Input("before", "", start.minusMinutes(1), start.minusMinutes(1), null));
+        UUID template = schedules.create(new ScheduleService.Input("inside", "", start, start, null));
+        schedules.create(new ScheduleService.Input("after", "", first.plusMonths(1).atStartOfDay(), first.plusMonths(1).atStartOfDay(), null));
+        db.update("INSERT INTO schedules(id,title,description,starts_at,remind_at) SELECT gen_random_uuid(),s.title,s.description,s.starts_at,s.remind_at FROM schedules s CROSS JOIN generate_series(1,500) WHERE s.id=?", template);
+        db.update("INSERT INTO notifications(id,schedule_id,revision,title,starts_at,due_at,status,next_attempt_at) SELECT gen_random_uuid(),s.id,s.version,s.title,s.starts_at,s.remind_at,'PENDING',s.remind_at FROM schedules s WHERE NOT EXISTS(SELECT 1 FROM notifications n WHERE n.schedule_id=s.id)");
+        var data = json.readTree(mvc.perform(get("/api/schedules").param("from", first.toString()).param("to", first.plusMonths(1).toString()))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertEquals(501, data.size());
+        for (var row : data) assertEquals("inside", row.path("title").asText());
+        mvc.perform(get("/api/schedules").param("from", first.toString())).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/schedules").param("from", first.toString()).param("to", first.toString())).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/schedules").param("from", first.toString()).param("to", first.plusDays(63).toString())).andExpect(status().isBadRequest());
+    }
+
     @Test void rejectsInvalidInputAndStaleUpdates() throws Exception {
         var good = input(null);
         var bodies = List.of(

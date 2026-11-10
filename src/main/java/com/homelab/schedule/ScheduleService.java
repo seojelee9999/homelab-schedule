@@ -23,6 +23,23 @@ public class ScheduleService {
  public List<Map<String,Object>> list() {
   return timestamps(db.queryForList("SELECT s.*,n.id notification_id,n.status notification_status FROM schedules s JOIN notifications n ON n.schedule_id=s.id AND n.revision=s.version WHERE s.deleted_at IS NULL ORDER BY starts_at LIMIT 500"));
  }
+ public List<Map<String,Object>> list(LocalDate from,LocalDate to) {
+  if(from==null && to==null) return list();
+  if(from==null || to==null || !to.isAfter(from) || to.isAfter(from.plusDays(62)))
+   throw new ResponseStatusException(BAD_REQUEST,"조회 기간은 시작일 포함, 종료일 제외로 최대 62일입니다.");
+  return timestamps(db.queryForList("SELECT s.*,n.id notification_id,n.status notification_status FROM schedules s JOIN notifications n ON n.schedule_id=s.id AND n.revision=s.version WHERE s.deleted_at IS NULL AND s.starts_at>=? AND s.starts_at<? ORDER BY s.starts_at,s.id",
+   from.atStartOfDay(SEOUL).toOffsetDateTime(),to.atStartOfDay(SEOUL).toOffsetDateTime()));
+ }
+ @Transactional public List<UUID> createBatch(List<Input> items) {
+  if(items==null || items.isEmpty() || items.size()>48)
+   throw new ResponseStatusException(BAD_REQUEST,"시간표는 1~48개의 일정으로 작성하세요.");
+  LocalDate day=items.get(0).startsAt().toLocalDate();
+  for(Input in:items) {
+   validate(in);
+   if(!in.startsAt().toLocalDate().equals(day)) throw new ResponseStatusException(BAD_REQUEST,"시간표의 날짜는 모두 같아야 합니다.");
+  }
+  return items.stream().map(this::create).toList();
+ }
  // JdbcTemplate returns java.sql.Timestamp; always expose ISO instants, never numeric epochs.
  static List<Map<String,Object>> timestamps(List<Map<String,Object>> rows) {
   rows.forEach(row -> row.replaceAll((key,value) -> value instanceof Timestamp t ? t.toInstant().toString() : value));

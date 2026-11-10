@@ -24,13 +24,29 @@ class DiscordClientTest {
             var body = json.readTree(payload);
             assertTrue(body.path("allowed_mentions").path("parse").isArray());
             assertEquals(0, body.path("allowed_mentions").path("parse").size());
-            assertTrue(body.path("content").asText().contains(id.toString()));
-            assertTrue(body.path("content").asText().contains("2030-01-01 12:00 (Asia/Seoul)"));
+            var embed = body.path("embeds").get(0);
+            assertEquals("12:00 · @everyone 한글 일정", embed.path("title").asText());
+            assertEquals(0x175d50, embed.path("color").asInt());
+            assertTrue(embed.path("footer").path("text").asText().contains(id.toString()));
+            assertEquals("2030년 1월 1일 (화)", embed.path("fields").get(0).path("value").asText());
+            assertEquals("12:00 · 서울 (KST)", embed.path("fields").get(1).path("value").asText());
+            assertEquals("<t:1893466800:R>", embed.path("fields").get(2).path("value").asText());
             return new DiscordClient.Reply(200, "{\"id\":\"1234567890\"}", null);
         });
         var result = client.send(id, "@everyone 한글 일정", Instant.parse("2030-01-01T03:00:00Z"));
         assertEquals("SENT", result.status());
         assertEquals("1234567890", result.messageId());
+    }
+
+    @Test void longestTitleFitsEmbedAndMidnightUsesSeoulDate() {
+        var client = new DiscordClient(json, endpoint, (uri, payload) -> {
+            var embed = json.readTree(payload).path("embeds").get(0);
+            assertTrue(embed.path("title").asText().length() <= 256);
+            assertTrue(embed.path("title").asText().startsWith("00:30 · "));
+            assertEquals("2030년 1월 2일 (수)", embed.path("fields").get(0).path("value").asText());
+            return new DiscordClient.Reply(200, "{\"id\":\"123\"}", null);
+        });
+        assertEquals("SENT", client.send(id, "일".repeat(200), Instant.parse("2030-01-01T15:30:00Z")).status());
     }
 
     @Test void rateLimitUsesSecondsIncludingFractionsAndHeaderFallback() {

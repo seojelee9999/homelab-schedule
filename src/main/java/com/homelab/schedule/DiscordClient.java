@@ -59,10 +59,20 @@ public class DiscordClient {
         if (endpoint == null) return new Delivery("FAILED", null, null, null, "Webhook is disabled");
         Integer code = null;
         try {
-            String when = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm '(Asia/Seoul)'")
+            String when = DateTimeFormatter.ofPattern("yyyy년 M월 d일 (EEE)", Locale.KOREAN)
                     .withZone(ScheduleService.SEOUL).format(startsAt);
-            String content = "일정 알림 · " + title + "\n시작 · " + when + "\n알림 ID · " + notificationId;
-            String body = json.writeValueAsString(Map.of("content", content,
+            String time = DateTimeFormatter.ofPattern("HH:mm").withZone(ScheduleService.SEOUL).format(startsAt);
+            // Keep the task and fixed Seoul time prominent; Discord renders the relative time locally.
+            Map<String,Object> embed = Map.of(
+                    "author", Map.of("name", "차곡 · 일정 알림"),
+                    "title", time + " · " + title,
+                    "color", 0x175d50,
+                    "fields", List.of(
+                            Map.of("name", "날짜", "value", when, "inline", true),
+                            Map.of("name", "시작 시간", "value", time + " · 서울 (KST)", "inline", true),
+                            Map.of("name", "시작까지", "value", "<t:" + startsAt.getEpochSecond() + ":R>", "inline", false)),
+                    "footer", Map.of("text", "Asia/Seoul · 알림 ID " + notificationId));
+            String body = json.writeValueAsString(Map.of("embeds", List.of(embed),
                     "allowed_mentions", Map.of("parse", List.of())));
             Reply reply = transport.post(endpoint, body);
             code = reply.status();

@@ -1,6 +1,9 @@
 package com.homelab.schedule;
 import java.util.*;
+import java.time.LocalDate;
+import com.homelab.schedule.ScheduleService.Input;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.security.web.csrf.CsrfToken;
 @RestController
@@ -9,7 +12,10 @@ class ScheduleController {
  final ScheduleService service;
  ScheduleController(ScheduleService service) { this.service=service; }
  @GetMapping("/csrf") CsrfToken csrf(CsrfToken token) { return token; }
- @GetMapping("/schedules") Object list() { return service.list(); }
+ @GetMapping("/schedules") Object list(@RequestParam(required=false) LocalDate from,@RequestParam(required=false) LocalDate to) { return service.list(from,to); }
+ record Batch(@NotEmpty @Size(max=48) List<@NotNull @Valid Input> items) {}
+ @PostMapping("/schedules/batch") @ResponseStatus(org.springframework.http.HttpStatus.CREATED)
+ Object createBatch(@Valid @RequestBody Batch batch) { return Map.of("ids",service.createBatch(batch.items())); }
  @PostMapping("/schedules") @ResponseStatus(org.springframework.http.HttpStatus.CREATED)
  Object create(@Valid @RequestBody ScheduleService.Input in) { return Map.of("id",service.create(in)); }
  @PutMapping("/schedules/{id}") void update(@PathVariable UUID id,@Valid @RequestBody ScheduleService.Input in) { service.update(id,in); }

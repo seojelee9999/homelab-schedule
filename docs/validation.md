@@ -1,3 +1,16 @@
+# 최신 검증 — 2026-11-11 시간표·달력 UX
+
+- Java 17 / Gradle 8.14.3 `test --tests '*DiscordClientTest' bootJar` 성공. Discord 단위 테스트 8개 통과; 실제 Discord 메시지는 전송하지 않았다.
+- UI mock smoke: `/plan/` 및 루트 경로, LA 기기 시간대에서도 서울 날짜·시각 유지, 오늘 기본 목록, 시간순 정렬, 달력 날짜 선택, 윤년·월 경계, 여러 행 저장, 전날 알림, 입력 유지 및 오류 복구 통과.
+- 실제 Chromium + API fixture: 1440px, 390px, 320px에서 날짜 조회·일괄 저장·편집·키보드 탭 이동 및 가로 넘침 없음 확인. `scripts/browser_smoke.cjs`에 재실행 가능한 검증을 보관했다. 브라우저 검증은 실제 DB와 연결하지 않았다.
+- 기존 배포 규칙 검증 통과.
+- 새 PostgreSQL 통합 테스트(일괄 저장·롤백·서울 날짜 경계·500개 초과 조회)는 작성·컴파일했으나 **실행하지 않았다**. 사용자가 추가 테스트를 건너뛰고 push하도록 요청하여 여기서 테스트를 종료했다.
+- 운영 배포 및 실제 Discord 수신은 이 검증에 포함하지 않는다. 기존 CI의 테스트·이미지 게시·GitOps 흐름은 유지한다.
+
+브라우저 검증에는 별도 Playwright 설치와 Chromium이 필요하다. `NODE_PATH`로 Playwright 위치를 지정하고 `node scripts/browser_smoke.cjs`를 실행한다. `QA_SCREENSHOTS` 디렉터리를 지정하면 화면을 저장한다.
+
+---
+
 # 검증 기록 — 2026-11-06 재개 작업
 
 ## 이번 작업에서 통과
