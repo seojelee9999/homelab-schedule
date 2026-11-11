@@ -13,7 +13,7 @@
   "images": [
     {
       "name": "ghcr.io/seojelee9999/homelab-schedule",
-      "newTag": "c1bbc9eeb327dc68e1bbeee89c9f710b4a3ecadf"
+      "newTag": "9ac26a6bc8c3402f14687f83b93ab93a09d5d14d"
     }
   ],
   "replicas": [
