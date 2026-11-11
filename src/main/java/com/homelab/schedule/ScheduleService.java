@@ -14,11 +14,11 @@ public class ScheduleService {
  final JdbcTemplate db;
  public ScheduleService(JdbcTemplate db) { this.db=db; }
  public record Input(@NotBlank @Size(max=200) String title,@NotNull @Size(max=2000) String description,
-  @NotNull LocalDateTime startsAt,@NotNull LocalDateTime remindAt,Long version) {}
+  @NotNull LocalDateTime startsAt,@NotNull LocalDateTime endsAt,Long version) {}
  static ResponseStatusException conflict(String s) { return new ResponseStatusException(CONFLICT,s); }
  void validate(Input in) {
-  if(in.remindAt().isAfter(in.startsAt())) throw new ResponseStatusException(BAD_REQUEST,"알림은 일정 시작 이전이어야 합니다.");
-  if(!in.remindAt().atZone(SEOUL).toInstant().isAfter(Instant.now())) throw new ResponseStatusException(BAD_REQUEST,"알림은 현재 이후로 지정하세요.");
+  if(!in.endsAt().isAfter(in.startsAt()) || in.endsAt().isAfter(in.startsAt().toLocalDate().plusDays(1).atStartOfDay()))
+   throw new ResponseStatusException(BAD_REQUEST,"종료 시간은 시작 이후부터 같은 날 24시까지여야 합니다.");
  }
  public List<Map<String,Object>> list() {
   return timestamps(db.queryForList("SELECT s.*,n.id notification_id,n.status notification_status FROM schedules s JOIN notifications n ON n.schedule_id=s.id AND n.revision=s.version WHERE s.deleted_at IS NULL ORDER BY starts_at LIMIT 500"));
@@ -46,8 +46,8 @@ public class ScheduleService {
   return rows;
  }
  @Transactional public UUID create(Input in) {
-  validate(in); UUID id=UUID.randomUUID();
-  db.update("INSERT INTO schedules(id,title,description,starts_at,remind_at) VALUES(?,?,?,?,?)",id,in.title().strip(),in.description(),in.startsAt().atZone(SEOUL).toOffsetDateTime(),in.remindAt().atZone(SEOUL).toOffsetDateTime());
+  serializeWrites(); validate(in); UUID id=UUID.randomUUID();
+  db.update("INSERT INTO schedules(id,title,description,starts_at,ends_at,remind_at) VALUES(?,?,?,?,?,?)",id,in.title().strip(),in.description(),in.startsAt().atZone(SEOUL).toOffsetDateTime(),in.endsAt().atZone(SEOUL).toOffsetDateTime(),in.startsAt().minusMinutes(10).atZone(SEOUL).toOffsetDateTime());
   enqueue(id); return id;
  }
  void lock(UUID id,Long version) {
@@ -58,17 +58,54 @@ public class ScheduleService {
   if(jobs.stream().anyMatch(j -> Set.of("SENDING","UNKNOWN").contains(j.get("status")))) throw conflict("전송 중이거나 불명확한 알림을 먼저 확인하세요.");
  }
  @Transactional public void update(UUID id,Input in) {
-  validate(in); lock(id,in.version()); cancel(id);
-  db.update("UPDATE schedules SET title=?,description=?,starts_at=?,remind_at=?,version=version+1 WHERE id=?",in.title().strip(),in.description(),in.startsAt().atZone(SEOUL).toOffsetDateTime(),in.remindAt().atZone(SEOUL).toOffsetDateTime(),id);
+  serializeWrites(); validate(in); lock(id,in.version()); cancel(id);
+  db.update("UPDATE schedules SET title=?,description=?,starts_at=?,ends_at=?,remind_at=?,version=version+1 WHERE id=?",in.title().strip(),in.description(),in.startsAt().atZone(SEOUL).toOffsetDateTime(),in.endsAt().atZone(SEOUL).toOffsetDateTime(),in.startsAt().minusMinutes(10).atZone(SEOUL).toOffsetDateTime(),id);
   enqueue(id);
  }
  @Transactional public void delete(UUID id,long version) {
-  lock(id,version); cancel(id);
+  serializeWrites(); lock(id,version); cancel(id);
   db.update("UPDATE schedules SET deleted_at=now(),version=version+1 WHERE id=?",id);
  }
  void cancel(UUID id) { db.update("UPDATE notifications SET status='CANCELLED' WHERE schedule_id=? AND status IN ('PENDING','FAILED')",id); }
  void enqueue(UUID id) {
-  db.update("INSERT INTO notifications(id,schedule_id,revision,title,starts_at,due_at,status,next_attempt_at) SELECT ?,id,version,title,starts_at,remind_at,'PENDING',remind_at FROM schedules WHERE id=?",UUID.randomUUID(),id);
+  db.update("INSERT INTO notifications(id,schedule_id,revision,title,starts_at,ends_at,due_at,status,next_attempt_at) SELECT ?,id,version,title,starts_at,ends_at,remind_at,CASE WHEN remind_at>now() THEN 'PENDING' ELSE 'CANCELLED' END,remind_at FROM schedules WHERE id=?",UUID.randomUUID(),id);
+ }
+ // Serialize schedule mutations so a whole-day edit can detect concurrent additions as well as edits.
+ void serializeWrites() { db.queryForList("SELECT pg_advisory_xact_lock(74133)"); }
+ public record DayItem(UUID id,@NotNull @jakarta.validation.Valid Input schedule) {}
+ public record DayPlan(@NotNull LocalDate date,@NotNull Map<UUID,Long> versions,
+  @NotNull @Size(max=48) List<@NotNull @jakarta.validation.Valid DayItem> items) {}
+ @Transactional public void saveDay(DayPlan plan) {
+  serializeWrites();
+  var current=list(plan.date(),plan.date().plusDays(1));
+  Map<UUID,Long> versions=new HashMap<>();
+  Map<UUID,Map<String,Object>> originals=new HashMap<>();
+  for(var row:current) {
+   UUID id=(UUID)row.get("id");
+   versions.put(id,((Number)row.get("version")).longValue()); originals.put(id,row);
+  }
+  if(!versions.equals(plan.versions())) throw conflict("이 날짜의 일정이 변경되었습니다. 작성표를 다시 불러오세요.");
+  Set<UUID> kept=new HashSet<>();
+  LocalDateTime previousEnd=null;
+  var sorted=plan.items().stream().sorted(Comparator.comparing(item -> item.schedule().startsAt())).toList();
+  for(DayItem item:sorted) {
+   Input in=item.schedule(); validate(in);
+   if(!in.startsAt().toLocalDate().equals(plan.date()) || (previousEnd!=null && in.startsAt().isBefore(previousEnd)))
+    throw new ResponseStatusException(BAD_REQUEST,"같은 날짜의 겹치지 않는 시간칸으로 작성하세요.");
+   previousEnd=in.endsAt();
+   if(item.id()!=null && (!versions.containsKey(item.id()) || !kept.add(item.id()) || !Objects.equals(in.version(),versions.get(item.id()))))
+    throw conflict("일정 버전을 확인하고 작성표를 다시 불러오세요.");
+  }
+  for(var entry:versions.entrySet()) if(!kept.contains(entry.getKey())) delete(entry.getKey(),entry.getValue());
+  for(DayItem item:sorted) {
+   Input in=item.schedule();
+   if(item.id()==null) { create(in); continue; }
+   var old=originals.get(item.id());
+   boolean unchanged=Objects.equals(old.get("title"),in.title().strip()) && Objects.equals(old.get("description"),in.description())
+    && Objects.equals(old.get("starts_at"),in.startsAt().atZone(SEOUL).toInstant().toString())
+    && Objects.equals(old.get("ends_at"),in.endsAt().atZone(SEOUL).toInstant().toString());
+   if(!unchanged) update(item.id(),in);
+  }
  }
  public List<Map<String,Object>> history() {
   var jobs=timestamps(db.queryForList("SELECT * FROM notifications ORDER BY due_at DESC,id LIMIT 500"));

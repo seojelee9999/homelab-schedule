@@ -15,7 +15,12 @@ import org.springframework.stereotype.Component;
 public class DiscordClient {
     record Reply(int status, String body, String retryAfter) {}
     @FunctionalInterface
-    interface Transport { Reply post(URI uri, String body) throws IOException, InterruptedException; }
+    interface Transport {
+        Reply post(URI uri, String body) throws IOException, InterruptedException;
+        default Reply postFile(URI uri, String payload, String text) throws IOException, InterruptedException {
+            throw new IOException("Attachments are not supported by this transport");
+        }
+    }
     public record Delivery(String status, Integer httpStatus, String messageId, Long retryMillis, String detail) {
         static Delivery unknown(Integer code) {
             return new Delivery("UNKNOWN", code, null, null, "Delivery could not be confirmed");
@@ -55,26 +60,51 @@ public class DiscordClient {
         }
     }
 
+    static String timeRange(Instant start, Instant end) {
+        var format = DateTimeFormatter.ofPattern("HH:mm").withZone(ScheduleService.SEOUL);
+        String finish = end.atZone(ScheduleService.SEOUL).toLocalDate().isAfter(start.atZone(ScheduleService.SEOUL).toLocalDate())
+                && end.atZone(ScheduleService.SEOUL).toLocalTime().equals(LocalTime.MIDNIGHT) ? "24:00" : format.format(end);
+        return format.format(start) + "–" + finish;
+    }
+
     public Delivery send(UUID notificationId, String title, Instant startsAt) {
+        return send(notificationId, title, startsAt, null);
+    }
+
+    public Delivery send(UUID notificationId, String title, Instant startsAt, Instant endsAt) {
+        String when = DateTimeFormatter.ofPattern("yyyy년 M월 d일 (EEE)", Locale.KOREAN)
+                .withZone(ScheduleService.SEOUL).format(startsAt);
+        String time = endsAt == null ? DateTimeFormatter.ofPattern("HH:mm").withZone(ScheduleService.SEOUL).format(startsAt)
+                : timeRange(startsAt, endsAt);
+        Map<String,Object> embed = Map.of(
+                "author", Map.of("name", "차곡 · 일정 알림"),
+                "title", time + " · " + title,
+                "color", 0x175d50,
+                "fields", List.of(
+                        Map.of("name", "날짜", "value", when, "inline", true),
+                        Map.of("name", endsAt == null ? "시작 시간" : "일정 시간", "value", time + " · 서울 (KST)", "inline", true),
+                        Map.of("name", "시작까지", "value", "<t:" + startsAt.getEpochSecond() + ":R>", "inline", false)),
+                "footer", Map.of("text", "Asia/Seoul · 알림 ID " + notificationId));
+        return deliver(Map.of("embeds", List.of(embed), "allowed_mentions", Map.of("parse", List.of())), null);
+    }
+
+    public Delivery sendDigest(UUID notificationId, String title, String text) {
+        // Long days (including existing data and notes) remain complete in a UTF-8 attachment.
+        boolean attach = text.length() > 3500;
+        Map<String,Object> embed = Map.of("title", title, "color", 0x175d50,
+                "description", attach ? "오늘의 전체 시간표는 첨부 파일에서 확인하세요." : text,
+                "footer", Map.of("text", "매일 오전 6시 · Asia/Seoul · 알림 ID " + notificationId));
+        Map<String,Object> payload = new HashMap<>(Map.of("embeds", List.of(embed), "allowed_mentions", Map.of("parse", List.of())));
+        if (attach) payload.put("attachments", List.of(Map.of("id", 0, "filename", "daily-schedule.txt")));
+        return deliver(payload, attach ? title + "\n\n" + text : null);
+    }
+
+    private Delivery deliver(Map<String,Object> payload, String attachment) {
         if (endpoint == null) return new Delivery("FAILED", null, null, null, "Webhook is disabled");
         Integer code = null;
         try {
-            String when = DateTimeFormatter.ofPattern("yyyy년 M월 d일 (EEE)", Locale.KOREAN)
-                    .withZone(ScheduleService.SEOUL).format(startsAt);
-            String time = DateTimeFormatter.ofPattern("HH:mm").withZone(ScheduleService.SEOUL).format(startsAt);
-            // Keep the task and fixed Seoul time prominent; Discord renders the relative time locally.
-            Map<String,Object> embed = Map.of(
-                    "author", Map.of("name", "차곡 · 일정 알림"),
-                    "title", time + " · " + title,
-                    "color", 0x175d50,
-                    "fields", List.of(
-                            Map.of("name", "날짜", "value", when, "inline", true),
-                            Map.of("name", "시작 시간", "value", time + " · 서울 (KST)", "inline", true),
-                            Map.of("name", "시작까지", "value", "<t:" + startsAt.getEpochSecond() + ":R>", "inline", false)),
-                    "footer", Map.of("text", "Asia/Seoul · 알림 ID " + notificationId));
-            String body = json.writeValueAsString(Map.of("embeds", List.of(embed),
-                    "allowed_mentions", Map.of("parse", List.of())));
-            Reply reply = transport.post(endpoint, body);
+            String body = json.writeValueAsString(payload);
+            Reply reply = attachment == null ? transport.post(endpoint, body) : transport.postFile(endpoint, body, attachment);
             code = reply.status();
             if (code >= 200 && code < 300) {
                 String id = json.readTree(reply.body()).path("id").asText("");
@@ -121,8 +151,18 @@ public class DiscordClient {
             return client;
         }
         public Reply post(URI uri, String body) throws IOException, InterruptedException {
+            return postBody(uri, "application/json", body);
+        }
+        public Reply postFile(URI uri, String payload, String text) throws IOException, InterruptedException {
+            String boundary = "schedule-" + UUID.randomUUID();
+            String body = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n"
+                    + payload + "\r\n--" + boundary + "\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"daily-schedule.txt\"\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n"
+                    + text + "\r\n--" + boundary + "--\r\n";
+            return postBody(uri, "multipart/form-data; boundary=" + boundary, body);
+        }
+        private Reply postBody(URI uri, String contentType, String body) throws IOException, InterruptedException {
             HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(8))
-                    .header("Content-Type", "application/json")
+                    .header("Content-Type", contentType)
                     .POST(HttpRequest.BodyPublishers.ofString(body)).build();
             HttpResponse<String> response = client().send(request, HttpResponse.BodyHandlers.ofString());
             return new Reply(response.statusCode(), response.body(), response.headers().firstValue("Retry-After").orElse(null));

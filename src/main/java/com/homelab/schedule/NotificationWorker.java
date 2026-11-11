@@ -1,6 +1,6 @@
 package com.homelab.schedule;
 
-import java.time.OffsetDateTime;
+import java.time.*;
 import java.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,6 +38,7 @@ public class NotificationWorker {
     public void poll() {
         if (!enabled) return;
         try {
+            enqueueDigests();
             recoverExpired();
             for (int i = 0; i < 20 && !Thread.currentThread().isInterrupted(); i++) {
                 Claim claim = claimNext();
@@ -48,6 +49,29 @@ public class NotificationWorker {
             // A failed result commit leaves durable SENDING for recovery, never an automatic retry.
             log.warn("Notification cycle could not finish; durable claims will be checked on the next cycle");
         }
+    }
+
+    public void enqueueDigests() {
+        transaction.executeWithoutResult(tx -> {
+            LocalDate day = db.queryForObject("SELECT next_date FROM digest_cursor WHERE id=1 FOR UPDATE", LocalDate.class);
+            ZonedDateTime now = ZonedDateTime.now(ScheduleService.SEOUL);
+            // Bound recovery work per poll; the cursor keeps every missed morning durable.
+            for (int i = 0; i < 7 && !day.atTime(6, 0).atZone(ScheduleService.SEOUL).isAfter(now); i++, day = day.plusDays(1)) {
+                var start = day.atStartOfDay(ScheduleService.SEOUL).toOffsetDateTime();
+                var end = day.plusDays(1).atStartOfDay(ScheduleService.SEOUL).toOffsetDateTime();
+                var entries = db.query("SELECT title,description,starts_at,ends_at FROM schedules WHERE deleted_at IS NULL AND starts_at>=? AND starts_at<? ORDER BY starts_at,id",
+                        (rs, row) -> DiscordClient.timeRange(rs.getObject("starts_at", OffsetDateTime.class).toInstant(),
+                                rs.getObject("ends_at", OffsetDateTime.class).toInstant()) + " · " + rs.getString("title")
+                                + (rs.getString("description").isBlank() ? "" : "\n  " + rs.getString("description")), start, end);
+                String text = entries.isEmpty() ? "등록된 일정이 없습니다." : String.join("\n\n", entries);
+                var due = day.atTime(6, 0).atZone(ScheduleService.SEOUL).toOffsetDateTime();
+                db.update("""
+                        INSERT INTO notifications(id,revision,title,starts_at,due_at,status,next_attempt_at,digest_date,digest_text)
+                        VALUES(?,1,?,?,?,'PENDING',?,?,?) ON CONFLICT(digest_date) DO NOTHING
+                        """, UUID.randomUUID(), day + " · 하루 일정 " + entries.size() + "개", due, due, due, day, text);
+                db.update("UPDATE digest_cursor SET next_date=? WHERE id=1", day.plusDays(1));
+            }
+        });
     }
 
     public Claim claimNext() {
@@ -71,15 +95,17 @@ public class NotificationWorker {
     public void send(Claim claim) {
         transaction.executeWithoutResult(tx -> {
             var rows = db.query("""
-                    SELECT title,starts_at,claimed_at <= clock_timestamp() - (? * interval '1 second') AS expired
+                    SELECT title,starts_at,ends_at,digest_text,claimed_at <= clock_timestamp() - (? * interval '1 second') AS expired
                     FROM notifications WHERE id=? AND status='SENDING' AND active_attempt=? FOR UPDATE
                     """, (rs, row) -> new Pending(rs.getString("title"), rs.getObject("starts_at", OffsetDateTime.class),
-                            rs.getBoolean("expired")), claimTimeoutSeconds, claim.notificationId(), claim.attemptId());
+                            rs.getObject("ends_at", OffsetDateTime.class), rs.getString("digest_text"), rs.getBoolean("expired")), claimTimeoutSeconds, claim.notificationId(), claim.attemptId());
             if (rows.isEmpty()) return; // Recovery, resolution, or a newer attempt fenced this sender out.
             Pending pending = rows.get(0);
             if (pending.expired()) { markUnknown(claim); return; }
             // Keep the row lock throughout HTTP and the result update. Recovery uses SKIP LOCKED.
-            DiscordClient.Delivery result = discord.send(claim.notificationId(), pending.title(), pending.startsAt().toInstant());
+            DiscordClient.Delivery result = pending.digestText() == null
+                    ? discord.send(claim.notificationId(), pending.title(), pending.startsAt().toInstant(), pending.endsAt().toInstant())
+                    : discord.sendDigest(claim.notificationId(), pending.title(), pending.digestText());
             db.update("""
                     UPDATE notification_attempts SET status=?,finished_at=clock_timestamp(),http_status=?,
                     message_id=?,detail=? WHERE id=?
@@ -116,5 +142,5 @@ public class NotificationWorker {
                 claim.notificationId());
     }
 
-    private record Pending(String title, OffsetDateTime startsAt, boolean expired) {}
+    private record Pending(String title, OffsetDateTime startsAt, OffsetDateTime endsAt, String digestText, boolean expired) {}
 }

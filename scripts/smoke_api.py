@@ -40,8 +40,8 @@ def main():
     for path in ("/style.css", "/app.js"):
         with client.open(BASE + path, timeout=5) as response:
             assert response.status == 200
-    later = (datetime.now(timezone(timedelta(hours=9))) + timedelta(days=1)).replace(microsecond=0, tzinfo=None)
-    body = {"title": "CI schedule", "description": "Disposable CI DB only", "startsAt": (later + timedelta(hours=1)).isoformat(), "remindAt": later.isoformat()}
+    later = (datetime.now(timezone(timedelta(hours=9))) + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0, tzinfo=None)
+    body = {"title": "CI schedule", "description": "Disposable CI DB only", "startsAt": (later + timedelta(hours=1)).isoformat(), "endsAt": (later + timedelta(hours=2)).isoformat()}
     try:
         request("/api/schedules", "POST", body)
         raise AssertionError("Mutation without CSRF was accepted")

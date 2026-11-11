@@ -43,7 +43,7 @@ class ScheduleIntegrationTest {
 
     @BeforeEach void clearTestSchema() {
         db.execute("TRUNCATE notification_attempts,notifications,schedules");
-        when(discord.send(any(), anyString(), any())).thenReturn(
+        when(discord.send(any(), anyString(), any(), any())).thenReturn(
                 new DiscordClient.Delivery("SENT", 200, "123456789", null, "Confirmed by Discord"));
     }
     @AfterAll static void dropTestSchema(@Autowired JdbcTemplate db) {
@@ -51,8 +51,8 @@ class ScheduleIntegrationTest {
     }
 
     private ScheduleService.Input input(Long version) {
-        LocalDateTime later = LocalDateTime.now(ScheduleService.SEOUL).plusDays(1).withNano(0);
-        return new ScheduleService.Input("회의 @everyone", "메모", later.plusHours(1), later, version);
+        LocalDateTime later = LocalDate.now(ScheduleService.SEOUL).plusDays(1).atTime(10, 0);
+        return new ScheduleService.Input("회의 @everyone", "메모", later, later.plusHours(1), version);
     }
     private UUID notification(UUID schedule) {
         return db.queryForObject("SELECT id FROM notifications WHERE schedule_id=? ORDER BY revision DESC LIMIT 1", UUID.class, schedule);
@@ -105,17 +105,17 @@ class ScheduleIntegrationTest {
     }
 
     @Test void batchCreatesEveryRowWithItsOwnReminderAndRejectsInvalidRowsAtomically() throws Exception {
-        LocalDateTime midnight = LocalDate.now(ScheduleService.SEOUL).plusDays(3).atTime(0, 30);
-        var first = new ScheduleService.Input("자정 작업", "전날 알림", midnight, midnight.minusHours(1), null);
-        var second = new ScheduleService.Input("오전 작업", "", midnight.plusHours(9), midnight.plusHours(8), null);
+        LocalDateTime midnight = LocalDate.now(ScheduleService.SEOUL).plusDays(3).atTime(0, 0);
+        var first = new ScheduleService.Input("자정 작업", "전날 알림", midnight, midnight.plusHours(1), null);
+        var second = new ScheduleService.Input("오전 작업", "", midnight.plusHours(9), midnight.plusHours(10), null);
         mvc.perform(post("/api/schedules/batch").with(csrf()).contentType("application/json")
                 .content(json.writeValueAsString(Map.of("items", List.of(first, second)))))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.ids.length()").value(2));
         assertEquals(2, db.queryForObject("SELECT count(*) FROM schedules", Integer.class));
         assertEquals(2, db.queryForObject("SELECT count(*) FROM notifications WHERE status='PENDING'", Integer.class));
-        assertEquals(first.remindAt().atZone(ScheduleService.SEOUL).toInstant(),
+        assertEquals(first.startsAt().minusMinutes(10).atZone(ScheduleService.SEOUL).toInstant(),
                 db.queryForObject("SELECT due_at FROM notifications WHERE title='자정 작업'", java.sql.Timestamp.class).toInstant());
-        var invalid = new ScheduleService.Input("invalid", "", midnight, midnight.plusHours(1), null);
+        var invalid = new ScheduleService.Input("invalid", "", midnight, midnight.minusHours(1), null);
         mvc.perform(post("/api/schedules/batch").with(csrf()).contentType("application/json")
                 .content(json.writeValueAsString(Map.of("items", List.of(first, invalid)))))
                 .andExpect(status().isBadRequest());
@@ -136,7 +136,7 @@ class ScheduleIntegrationTest {
         db.execute("CREATE FUNCTION reject_batch_row() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.title='reject' THEN RAISE EXCEPTION 'test'; END IF; RETURN NEW; END $$");
         db.execute("CREATE TRIGGER reject_batch BEFORE INSERT ON schedules FOR EACH ROW EXECUTE FUNCTION reject_batch_row()");
         try {
-            var bad = new ScheduleService.Input("reject", "", good.startsAt(), good.remindAt(), null);
+            var bad = new ScheduleService.Input("reject", "", good.startsAt(), good.endsAt(), null);
             assertThrows(RuntimeException.class, () -> schedules.createBatch(List.of(good, bad)));
             assertEquals(0, db.queryForObject("SELECT count(*) FROM schedules", Integer.class));
             assertEquals(0, db.queryForObject("SELECT count(*) FROM notifications", Integer.class));
@@ -149,10 +149,10 @@ class ScheduleIntegrationTest {
     @Test void calendarRangeUsesSeoulBoundariesAndIsNotTruncatedAt500() throws Exception {
         LocalDate first = LocalDate.now(ScheduleService.SEOUL).plusYears(1).withDayOfMonth(1);
         LocalDateTime start = first.atStartOfDay();
-        schedules.create(new ScheduleService.Input("before", "", start.minusMinutes(1), start.minusMinutes(1), null));
-        UUID template = schedules.create(new ScheduleService.Input("inside", "", start, start, null));
-        schedules.create(new ScheduleService.Input("after", "", first.plusMonths(1).atStartOfDay(), first.plusMonths(1).atStartOfDay(), null));
-        db.update("INSERT INTO schedules(id,title,description,starts_at,remind_at) SELECT gen_random_uuid(),s.title,s.description,s.starts_at,s.remind_at FROM schedules s CROSS JOIN generate_series(1,500) WHERE s.id=?", template);
+        schedules.create(new ScheduleService.Input("before", "", start.minusMinutes(1), start, null));
+        UUID template = schedules.create(new ScheduleService.Input("inside", "", start, start.plusHours(1), null));
+        schedules.create(new ScheduleService.Input("after", "", first.plusMonths(1).atStartOfDay(), first.plusMonths(1).atTime(1, 0), null));
+        db.update("INSERT INTO schedules(id,title,description,starts_at,ends_at,remind_at) SELECT gen_random_uuid(),s.title,s.description,s.starts_at,s.ends_at,s.remind_at FROM schedules s CROSS JOIN generate_series(1,500) WHERE s.id=?", template);
         db.update("INSERT INTO notifications(id,schedule_id,revision,title,starts_at,due_at,status,next_attempt_at) SELECT gen_random_uuid(),s.id,s.version,s.title,s.starts_at,s.remind_at,'PENDING',s.remind_at FROM schedules s WHERE NOT EXISTS(SELECT 1 FROM notifications n WHERE n.schedule_id=s.id)");
         var data = json.readTree(mvc.perform(get("/api/schedules").param("from", first.toString()).param("to", first.plusMonths(1).toString()))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
@@ -166,10 +166,10 @@ class ScheduleIntegrationTest {
     @Test void rejectsInvalidInputAndStaleUpdates() throws Exception {
         var good = input(null);
         var bodies = List.of(
-                new ScheduleService.Input(" ", "", good.startsAt(), good.remindAt(), null),
-                new ScheduleService.Input("x".repeat(201), "", good.startsAt(), good.remindAt(), null),
-                new ScheduleService.Input("x", "x".repeat(2001), good.startsAt(), good.remindAt(), null),
-                new ScheduleService.Input("x", "", good.startsAt(), good.startsAt().plusMinutes(1), null),
+                new ScheduleService.Input(" ", "", good.startsAt(), good.endsAt(), null),
+                new ScheduleService.Input("x".repeat(201), "", good.startsAt(), good.endsAt(), null),
+                new ScheduleService.Input("x", "x".repeat(2001), good.startsAt(), good.endsAt(), null),
+                new ScheduleService.Input("x", "", good.startsAt(), good.startsAt().plusDays(1), null),
                 new ScheduleService.Input("x", "", good.startsAt(), LocalDateTime.now(ScheduleService.SEOUL).minusDays(1), null));
         for (var body : bodies) mvc.perform(post("/api/schedules").with(csrf()).contentType("application/json")
                 .content(json.writeValueAsString(body))).andExpect(status().isBadRequest());
@@ -196,7 +196,7 @@ class ScheduleIntegrationTest {
             start.countDown();
             for (Future<?> result : results) result.get(10, TimeUnit.SECONDS);
         } finally { pool.shutdownNow(); }
-        verify(discord, times(1)).send(eq(id), anyString(), any());
+        verify(discord, times(1)).send(eq(id), anyString(), any(), any());
         assertEquals("SENT", notificationStatus(id));
         assertEquals(1, db.queryForObject("SELECT attempt_count FROM notifications WHERE id=?", Integer.class, id));
         var history = json.readTree(mvc.perform(get("/api/notifications")).andReturn().getResponse().getContentAsString()).get(0);
@@ -226,7 +226,7 @@ class ScheduleIntegrationTest {
         verifyNoInteractions(discord);
         worker.send(fresh);
         assertEquals("SENT", notificationStatus(id));
-        verify(discord, times(1)).send(eq(id), anyString(), any());
+        verify(discord, times(1)).send(eq(id), anyString(), any(), any());
     }
 
     @Test void expiredSenderDoesNotSendEvenBeforeRecoveryRuns() {
@@ -258,14 +258,14 @@ class ScheduleIntegrationTest {
 
     @Test void rateLimitReschedulesButUncertainDeliveryDoesNot() {
         UUID id = due();
-        when(discord.send(any(), anyString(), any())).thenReturn(new DiscordClient.Delivery("PENDING", 429, null, 2500L, "Rate limited"));
+        when(discord.send(any(), anyString(), any(), any())).thenReturn(new DiscordClient.Delivery("PENDING", 429, null, 2500L, "Rate limited"));
         worker.send(worker.claimNext());
         assertEquals("PENDING", notificationStatus(id));
         assertTrue(db.queryForObject("SELECT next_attempt_at>now() FROM notifications WHERE id=?", Boolean.class, id));
         assertNull(worker.claimNext());
         assertEquals("RATE_LIMITED", db.queryForObject("SELECT status FROM notification_attempts WHERE notification_id=?", String.class, id));
         db.update("UPDATE notifications SET next_attempt_at=now() WHERE id=?", id);
-        when(discord.send(any(), anyString(), any())).thenReturn(DiscordClient.Delivery.unknown(503));
+        when(discord.send(any(), anyString(), any(), any())).thenReturn(DiscordClient.Delivery.unknown(503));
         worker.send(worker.claimNext());
         assertEquals("UNKNOWN", notificationStatus(id));
         assertNull(worker.claimNext());
@@ -273,7 +273,7 @@ class ScheduleIntegrationTest {
 
     @Test void failedDeliveryCanBeRetriedOrCancelledByScheduleUpdate() {
         UUID id = due();
-        when(discord.send(any(), anyString(), any())).thenReturn(new DiscordClient.Delivery("FAILED", 400, null, null, "Rejected"));
+        when(discord.send(any(), anyString(), any(), any())).thenReturn(new DiscordClient.Delivery("FAILED", 400, null, null, "Rejected"));
         worker.send(worker.claimNext());
         assertEquals("FAILED", notificationStatus(id));
         schedules.resolve(id, true, false);
@@ -290,7 +290,7 @@ class ScheduleIntegrationTest {
         db.update("UPDATE notifications SET claimed_at=now()-interval '40 seconds' WHERE id=?", id);
         var recoveringReplica = new NotificationWorker(db, discord, manager, false, 30);
         CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
-        when(discord.send(any(), anyString(), any())).thenAnswer(invocation -> {
+        when(discord.send(any(), anyString(), any(), any())).thenAnswer(invocation -> {
             entered.countDown();
             assertTrue(release.await(5, TimeUnit.SECONDS));
             return new DiscordClient.Delivery("SENT", 200, "123", null, "Confirmed");
@@ -319,7 +319,7 @@ class ScheduleIntegrationTest {
             db.execute("DROP TRIGGER reject_sent ON notifications");
             db.execute("DROP FUNCTION reject_sent()");
         }
-        verify(discord, times(1)).send(eq(id), anyString(), any());
+        verify(discord, times(1)).send(eq(id), anyString(), any(), any());
         assertEquals("SENDING", notificationStatus(id));
         assertEquals("SENDING", db.queryForObject("SELECT status FROM notification_attempts WHERE id=?", String.class, claim.attemptId()));
         expire(id);

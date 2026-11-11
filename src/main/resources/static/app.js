@@ -3,13 +3,13 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const apiBase = new URL('./', document.baseURI);
-  const state = { schedules: [], notifications: [], editing: null, csrf: null, busy: false, schedulesReady: false, notificationsReady: false, selectedDate: '', month: '', loadedMonth: '', draftRows: [], dirty: false };
+  const state = { schedules: [], notifications: [], editing: null, csrf: null, busy: false, schedulesReady: false, notificationsReady: false, selectedDate: '', month: '', loadedMonth: '', draftRows: [], dirty: false, editorDate: '', editorReady: false, editorLoading: false, editorLoad: 0, versions: {} };
   const labels = { PENDING: '알림 대기', SENDING: '발송 중', SENT: '발송 완료', FAILED: '발송 실패', UNKNOWN: '결과 확인 필요', CANCELLED: '취소됨', CANCELED: '취소됨', DISABLED: '알림 없음', RESOLVED: '확인 완료', RATE_LIMITED: '전송 제한으로 대기' };
   const dateFormatter = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'long', day: 'numeric', weekday: 'short' });
   const timeFormatter = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
   const localFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
   const value = (row, camel, snake) => row[camel] ?? row[snake];
-  const normalize = (row) => ({ ...row, startsAt: value(row, 'startsAt', 'starts_at'), remindAt: value(row, 'remindAt', 'remind_at'), scheduleId: value(row, 'scheduleId', 'schedule_id'), createdAt: value(row, 'createdAt', 'created_at'), sentAt: value(row, 'sentAt', 'sent_at'), notificationStatus: value(row, 'notificationStatus', 'notification_status'), scheduleTitle: value(row, 'scheduleTitle', 'schedule_title') });
+  const normalize = (row) => ({ ...row, startsAt: value(row, 'startsAt', 'starts_at'), endsAt: value(row, 'endsAt', 'ends_at'), remindAt: value(row, 'remindAt', 'remind_at'), scheduleId: value(row, 'scheduleId', 'schedule_id'), createdAt: value(row, 'createdAt', 'created_at'), sentAt: value(row, 'sentAt', 'sent_at'), notificationStatus: value(row, 'notificationStatus', 'notification_status'), scheduleTitle: value(row, 'scheduleTitle', 'schedule_title') });
   function instant(raw) {
     if (!raw) return new Date(NaN);
     const text = String(raw).replace(' ', 'T');
@@ -38,7 +38,7 @@
   }
   function errorMessage(error) {
     if (error.status === 409) return '다른 작업으로 정보가 변경되었거나 현재 알림 상태에서는 처리할 수 없습니다. 최신 목록을 확인한 뒤 다시 시도해 주세요. 입력 내용은 유지됩니다.';
-    if (error.status === 400 || error.status === 422) return '입력값을 확인해 주세요. 제목과 서울 기준 일정·알림 시각이 올바른지 확인하세요.';
+    if (error.status === 400 || error.status === 422) return '입력값을 확인해 주세요. 제목, 날짜와 일정의 시작·종료 범위를 확인하세요.';
     if (error.status === 401 || error.status === 403) return '접근 권한 또는 보안 세션을 확인할 수 없습니다. 페이지를 새로고침한 뒤 다시 시도해 주세요.';
     if (error.status === 404) return '해당 항목이 더 이상 존재하지 않습니다. 목록을 새로고침해 주세요.';
     return '서버 응답을 확인하지 못했습니다. 변경이 반영되었을 수 있으니, 다시 시도하기 전에 목록을 새로고침해 확인해 주세요.';
@@ -193,7 +193,8 @@
       const isNext = schedule === next;
       const card = element('article', `schedule-card${isNext ? ' next-schedule' : ''}`);
       const top = element('div', 'card-top');
-      const tile = element('time', 'time-tile', date.slice(11, 16));
+      const tile = element('time', 'time-tile', scheduleRange(schedule));
+      tile.append(element('span', '', durationLabel((instant(schedule.endsAt) - instant(schedule.startsAt)) / 60000)));
       tile.setAttribute('datetime', schedule.startsAt);
       if (isNext) tile.append(element('span', '', '다음 일정'));
       else if (instant(schedule.startsAt) < new Date()) tile.append(element('span', 'elapsed', '지난 시간'));
@@ -246,7 +247,7 @@
       cell.append(element('span', 'day-number', `${day === todayKey() ? '● ' : ''}${Number(day.slice(8))}`));
       if (schedules.length) {
         cell.append(element('span', 'day-count', `${schedules.length}개`));
-        for (const schedule of schedules.slice(0, 2)) cell.append(element('span', 'calendar-event', `${localInput(schedule.startsAt).slice(11, 16)} ${schedule.title}`));
+        for (const schedule of schedules.slice(0, 2)) cell.append(element('span', 'calendar-event', `${scheduleRange(schedule)} ${schedule.title}`));
         if (schedules.length > 2) cell.append(element('span', 'calendar-more', `+${schedules.length - 2}개`));
       }
       grid.append(cell);
@@ -262,6 +263,7 @@
     activateTab($('schedule-tab'));
     renderSchedules(); renderStats(); renderCalendar();
     if (state.loadedMonth !== state.month || !state.schedulesReady) await refresh();
+    else if (!state.dirty) await loadEditor(day);
     $('selected-date').focus();
   }
   async function selectMonth(month) {
@@ -324,7 +326,10 @@
   }
   function setBusy(busy) {
     state.busy = busy;
-    $('form-fields').disabled = busy;
+    $('form-fields').disabled = busy || state.editorLoading;
+    $('save').disabled = !state.editorReady;
+    for (const row of state.draftRows) for (const control of row.controls) control.disabled = busy;
+    syncRows();
     $('refresh').disabled = busy;
     for (const id of ['previous-day', 'next-day', 'go-today', 'selected-date', 'previous-month', 'next-month', 'this-month', 'plan-day']) $(id).disabled = busy;
     $('refresh').textContent = busy ? '처리 중…' : '↻ 새로고침';
@@ -358,103 +363,133 @@
   async function refresh() {
     if (state.busy) return;
     setBusy(true);
-    try { if (await reload()) announce('최신 일정과 알림 이력을 불러왔습니다.'); }
+    try {
+      const loaded = await reload();
+      if (!state.dirty) await loadEditor(state.editorDate || state.selectedDate);
+      if (loaded) announce('최신 일정과 알림 이력을 불러왔습니다.');
+    }
     finally { setBusy(false); }
   }
-  function reminderMinutes() {
-    return Number($('reminder-offset').value === 'custom' ? $('custom-minutes').value : $('reminder-offset').value);
+  const minuteLabel = (minute) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+  const durationLabel = (minutes) => minutes % 60 === 0 ? `${minutes / 60}시간` : `${Math.floor(minutes / 60)}시간 ${minutes % 60}분`;
+  const rangeLabel = (row) => `${minuteLabel(row.start)}–${minuteLabel(row.end)}`;
+  function scheduleRange(schedule) {
+    const start = localInput(schedule.startsAt), end = localInput(schedule.endsAt);
+    return `${start.slice(11, 16)}–${end.slice(0, 10) > start.slice(0, 10) && end.slice(11, 16) === '00:00' ? '24:00' : end.slice(11, 16)}`;
   }
   function rowTimes(row) {
-    const start = `${$('plan-date').value}T${row.time.value}:00`;
-    const date = instant(start);
-    const minutes = reminderMinutes();
-    const reminder = new Date(date.getTime() - minutes * 60000);
-    return { startsAt: start, remindAt: Number.isNaN(reminder.getTime()) ? '' : `${localInput(reminder.toISOString())}:00` };
+    const day = state.editorDate;
+    return { startsAt: `${day}T${minuteLabel(row.start)}:00`,
+      endsAt: row.end === 1440 ? `${shiftDate(day, 1)}T00:00:00` : `${day}T${minuteLabel(row.end)}:00` };
   }
   function updatePreview() {
-    const custom = $('reminder-offset').value === 'custom';
-    $('custom-reminder').hidden = !custom;
-    $('custom-minutes').disabled = !custom;
-    $('custom-minutes').required = custom;
-    const row = state.draftRows[0];
-    if (!row) return;
-    const times = rowTimes(row);
-    const valid = !Number.isNaN(instant(times.startsAt).getTime()) && times.remindAt;
-    $('reminder-preview').textContent = valid ? `첫 일정 ${row.time.value} → 알림 ${format(times.remindAt)}${instant(times.remindAt) <= new Date() ? ' · 이미 지난 알림 시각이에요' : ''}` : '날짜와 시간을 입력하면 알림 시각을 미리 볼 수 있어요.';
-    $('discord-preview-title').textContent = `${row.time.value || '09:00'} · ${row.title.value || '해야 할 일'}`;
-    $('discord-preview-date').textContent = valid ? `${dayLabel($('plan-date').value)} · 서울 (KST)` : '서울 시간 기준';
-    $('save').textContent = state.editing ? '변경 내용 저장' : `시간표 저장 · ${state.draftRows.length}개`;
+    const filled = state.draftRows.filter(row => row.title.value.trim());
+    const row = filled[0];
+    $('save').textContent = `시간표 저장 · ${filled.length}개`;
+    $('reminder-preview').textContent = row ? `첫 일정 ${rangeLabel(row)} → 10분 전 알림 ${format(new Date(instant(rowTimes(row).startsAt).getTime() - 600000).toISOString())}` : '할 일을 적은 칸만 일정으로 저장됩니다.';
+    $('discord-preview-title').textContent = row ? `${rangeLabel(row)} · ${row.title.value}` : '09:00–10:00 · 해야 할 일';
+    $('discord-preview-date').textContent = state.editorDate ? `${dayLabel(state.editorDate)} · 서울 (KST)` : '서울 시간 기준';
   }
-  function defaultTime() {
-    if ($('plan-date').value !== todayKey()) return '09:00';
-    const later = localInput(new Date(Date.now() + 60 * 60000).toISOString());
-    return later.slice(0, 10) === todayKey() ? later.slice(11, 16) : '23:59';
+  function snapshot(row) {
+    return { start: row.start, end: row.end, id: row.id, version: row.version, title: row.title.value, description: row.description.value, checked: row.check.checked };
   }
-  function addRow(data = {}, focus = false) {
-    if (state.draftRows.length >= 48) return;
-    const row = element('tr', 'plan-row');
-    const timeCell = element('td');
-    const contentCell = element('td');
-    const actionCell = element('td');
-    const time = element('input'); time.type = 'time'; time.required = true;
-    time.setAttribute('aria-label', '일정 시작 시간');
-    const previous = state.draftRows.at(-1)?.time.value;
-    time.value = data.time || (previous ? `${String(Math.min(23, Number(previous.slice(0, 2)) + 1)).padStart(2, '0')}:${previous.slice(3)}` : defaultTime());
-    const title = element('input'); title.required = true; title.maxLength = 200;
-    title.placeholder = '무엇을 할까요?'; title.value = data.title || ''; title.setAttribute('aria-label', '할 일');
-    const description = element('textarea'); description.rows = 1; description.maxLength = 2000;
-    description.placeholder = '메모 · 장소 (선택)'; description.value = data.description || ''; description.setAttribute('aria-label', '메모 또는 장소');
-    const item = { node: row, time, title, description };
-    const remove = button('×', 'remove-row', () => {
-      if (state.draftRows.length === 1) return;
-      const index = state.draftRows.indexOf(item);
-      state.draftRows = state.draftRows.filter((r) => r !== item);
-      row.remove(); state.dirty = true;
-      syncRows(); updatePreview();
-      state.draftRows[Math.min(index, state.draftRows.length - 1)].title.focus();
-    });
-    item.remove = remove;
-    remove.setAttribute('aria-label', '입력 행 삭제');
-    for (const input of [time, title, description]) input.addEventListener('input', () => {
-      state.dirty = true; input.setCustomValidity(''); updatePreview();
-    });
-    timeCell.append(time); contentCell.append(title, description); actionCell.append(remove);
-    row.append(timeCell, contentCell, actionCell); $('plan-rows').append(row);
-    state.draftRows.push(item); syncRows(); updatePreview();
-    if (focus) title.focus();
+  function hourlyRows(start = 0, end = 1440, data = {}) {
+    const result = [];
+    for (let minute = start; minute < end;) {
+      const next = Math.min(end, (Math.floor(minute / 60) + 1) * 60);
+      result.push({ ...data, start: minute, end: next, id: minute === start ? data.id : null, version: minute === start ? data.version : null, checked: false });
+      minute = next;
+    }
+    return result;
+  }
+  function renderDraft(data) {
+    $('plan-rows').replaceChildren(); state.draftRows = [];
+    for (const entry of data) {
+      const node = element('tr', `plan-row${entry.end - entry.start > 60 ? ' merged-row' : ''}`);
+      const timeCell = element('td'), contentCell = element('td'), actionCell = element('td');
+      const check = element('input'); check.type = 'checkbox'; check.checked = !!entry.checked;
+      check.setAttribute('aria-label', `${rangeLabel(entry)} 시간 선택`);
+      const label = element('label', 'block-time');
+      label.append(check, element('strong', '', rangeLabel(entry)), element('span', '', durationLabel(entry.end - entry.start)));
+      timeCell.append(label);
+      const title = element('input'); title.maxLength = 200; title.value = entry.title || ''; title.placeholder = '할 일';
+      title.setAttribute('aria-label', `${rangeLabel(entry)} 할 일`);
+      const description = element('textarea'); description.rows = 1; description.maxLength = 2000;
+      description.value = entry.description || ''; description.placeholder = '메모 · 장소 (선택)'; description.setAttribute('aria-label', `${rangeLabel(entry)} 메모`);
+      const row = { ...entry, node, title, description, check, controls: [] };
+      for (const input of [title, description]) input.addEventListener('input', () => { state.dirty = true; title.setCustomValidity(''); updatePreview(); });
+      check.addEventListener('change', syncRows);
+      if (entry.end - entry.start > 60) {
+        const split = button('나누기', 'secondary block-action', () => {
+          const data = state.draftRows.flatMap(item => item === row ? hourlyRows(row.start, row.end, snapshot(row)) : [snapshot(item)]);
+          state.dirty = true; renderDraft(data);
+        });
+        actionCell.append(split); row.controls.push(split);
+      }
+      const clear = button('비우기', 'secondary block-action', () => {
+        state.dirty = true;
+        renderDraft(state.draftRows.flatMap(item => item === row ? hourlyRows(row.start, row.end) : [snapshot(item)]));
+      });
+      clear.setAttribute('aria-label', `${rangeLabel(entry)} 일정 비우기`);
+      actionCell.append(clear); row.controls.push(clear);
+      contentCell.append(title, description); node.append(timeCell, contentCell, actionCell);
+      $('plan-rows').append(node); state.draftRows.push(row);
+    }
+    syncRows(); updatePreview();
   }
   function syncRows() {
-    for (const row of state.draftRows) row.remove.disabled = state.draftRows.length === 1;
-    $('add-row').hidden = !!state.editing;
-    $('add-row').disabled = state.draftRows.length >= 48;
+    const selected = state.draftRows.filter(row => row.check.checked);
+    $('selection-count').textContent = selected.length ? `${selected.length}칸 · ${durationLabel(selected.reduce((total, row) => total + row.end - row.start, 0))} 선택` : '선택한 시간 없음';
+    $('merge-rows').disabled = state.busy || selected.length < 2;
   }
-  function resetForm() {
-    state.editing = null; state.dirty = false; state.draftRows = [];
-    $('schedule-form').reset(); $('plan-rows').replaceChildren();
-    $('plan-date').value = state.selectedDate;
-    $('reminder-offset').value = '10';
+  function resetForm(day = state.selectedDate) {
+    state.editing = null; state.dirty = false; state.editorReady = false; state.versions = {}; state.editorDate = day;
+    $('plan-date').value = day;
+    $('form-fields').disabled = true;
     $('form-title').textContent = '하루 시간표 작성';
-    $('cancel-edit').hidden = true; $('edit-note').hidden = true;
-    addRow();
+    $('cancel-edit').hidden = false; $('edit-note').hidden = true;
+    renderDraft(hourlyRows());
+  }
+  async function loadEditor(day) {
+    const sequence = ++state.editorLoad;
+    state.editorLoading = true;
+    resetForm(day); $('editor-status').textContent = '이 날짜의 시간표를 불러오는 중입니다.';
+    try {
+      const saved = rows(await request(`/api/schedules?from=${day}&to=${shiftDate(day, 1)}`)).sort((a, b) => instant(a.startsAt) - instant(b.startsAt));
+      if (sequence !== state.editorLoad) return;
+      const data = []; let cursor = 0;
+      for (const item of saved) {
+        const start = Math.round((instant(item.startsAt) - instant(`${day}T00:00:00`)) / 60000);
+        const end = Math.round((instant(item.endsAt) - instant(`${day}T00:00:00`)) / 60000);
+        if (start < cursor || end <= start || end > 1440) throw new Error('overlapping');
+        data.push(...hourlyRows(cursor, start), { start, end, id: item.id, version: item.version, title: item.title, description: item.description });
+        state.versions[item.id] = item.version; cursor = end;
+      }
+      data.push(...hourlyRows(cursor)); renderDraft(data);
+      state.editorReady = true;
+      $('edit-note').hidden = !saved.length;
+      $('editor-status').textContent = `${dayLabel(day)} · 00:00–24:00`;
+    } catch (error) {
+      if (sequence !== state.editorLoad) return;
+      $('editor-status').textContent = error.message === 'overlapping' ? '기존 일정의 시간이 겹칩니다. 왼쪽 목록에서 겹치는 일정을 삭제한 뒤 작성표를 다시 불러오세요.' : '작성표를 불러오지 못했습니다. 새로고침해 주세요.';
+      announce($('editor-status').textContent, true);
+    } finally {
+      if (sequence === state.editorLoad) {
+        // Keep date/reload available after a failed load; saving still checks editorReady.
+        state.editorLoading = false;
+        $('form-fields').disabled = state.busy;
+        $('save').disabled = !state.editorReady;
+      }
+    }
   }
   async function mayReplaceDraft() {
     return !state.dirty || await confirmAction('작성 중인 내용을 바꿀까요?', '아직 저장하지 않은 입력 내용이 사라집니다.', '입력 내용 바꾸기');
   }
   async function editSchedule(schedule) {
     if (state.busy || !await mayReplaceDraft()) return;
-    resetForm();
-    state.editing = { id: schedule.id, version: schedule.version };
-    $('plan-date').value = localInput(schedule.startsAt).slice(0, 10);
-    $('plan-rows').replaceChildren(); state.draftRows = [];
-    const minutes = Math.round((instant(schedule.startsAt) - instant(schedule.remindAt)) / 60000);
-    $('reminder-offset').value = [0, 10, 30, 60, 1440].includes(minutes) ? String(minutes) : 'custom';
-    $('custom-minutes').value = String(minutes);
-    addRow({ time: localInput(schedule.startsAt).slice(11, 16), title: schedule.title, description: schedule.description });
-    $('form-title').textContent = '일정 수정';
-    $('cancel-edit').hidden = false; $('edit-note').hidden = false;
-    state.dirty = true;
-    state.draftRows[0].title.focus();
-    $('schedule-form').scrollIntoView({ block: 'center', behavior: 'auto' });
+    await loadEditor(localInput(schedule.startsAt).slice(0, 10));
+    state.draftRows.find(row => row.id === schedule.id)?.title.focus();
+    $('schedule-form').scrollIntoView({ block: 'start', behavior: 'auto' });
   }
   function confirmAction(title, description, label, risk = false) {
     const dialog = $('confirm-dialog');
@@ -477,7 +512,7 @@
     setBusy(true);
     try {
       await action();
-      if (afterSuccess) afterSuccess();
+      if (afterSuccess) await afterSuccess();
       const refreshed = await reload();
       announce(refreshed ? success : `${success} 최신 목록을 불러오지 못했으니 새로고침해 주세요.`, !refreshed);
     } catch (error) {
@@ -489,7 +524,7 @@
     const accepted = await confirmAction('일정을 삭제할까요?', `‘${schedule.title}’ 일정을 삭제합니다. 삭제한 일정은 복구할 수 없습니다.`, '일정 삭제');
     if (!accepted) return;
     await mutate(() => request(`/api/schedules/${encodeURIComponent(schedule.id)}?version=${encodeURIComponent(schedule.version)}`, { method: 'DELETE' }), '일정을 삭제했습니다.', () => {
-      if (state.editing?.id === schedule.id) resetForm();
+      if (!state.dirty && state.editorDate === localInput(schedule.startsAt).slice(0, 10)) return loadEditor(state.editorDate);
     });
   }
   async function resolveNotification(notification, retry) {
@@ -500,40 +535,42 @@
   }
   $('schedule-form').addEventListener('submit', async (event) => {
     event.preventDefault();
-    if (state.busy) return;
-    for (const row of state.draftRows) {
-      row.title.setCustomValidity(row.title.value.trim() ? '' : '할 일을 입력해 주세요.');
-      row.time.setCustomValidity('');
-    }
+    if (state.busy || !state.editorReady) return;
+    for (const row of state.draftRows) row.title.setCustomValidity(row.description.value.trim() && !row.title.value.trim() ? '메모가 있는 칸에는 할 일을 입력해 주세요.' : '');
     if (!$('schedule-form').reportValidity()) return;
-    const items = state.draftRows.map((row) => ({ title: row.title.value.trim(), description: row.description.value.trim(), ...rowTimes(row) }));
-    for (const [index, item] of items.entries()) {
-      if (!item.remindAt || instant(item.remindAt) <= new Date() || instant(item.remindAt) > instant(item.startsAt)) {
-        state.draftRows[index].time.setCustomValidity('알림 시각이 현재 이후여야 합니다. 시작 시간을 늦추거나 알림을 시작 시각으로 바꿔주세요.');
-        $('schedule-form').reportValidity(); return;
-      }
+    const items = state.draftRows.filter(row => row.title.value.trim()).map(row => ({ id: row.id || null,
+      schedule: { title: row.title.value.trim(), description: row.description.value.trim(), ...rowTimes(row), version: row.version || null } }));
+    const savedDate = state.editorDate;
+    await mutate(() => request('/api/schedules/day', { method: 'PUT', body: { date: savedDate, versions: state.versions, items } }),
+      `${items.length}개의 일정을 시간표에 저장했습니다.`, async () => {
+        state.selectedDate = savedDate; state.month = savedDate.slice(0, 7); $('search').value = '';
+        await loadEditor(savedDate); activateTab($('schedule-tab'));
+      });
+  });
+  $('merge-rows').addEventListener('click', () => {
+    const selected = state.draftRows.filter(row => row.check.checked);
+    if (state.busy || selected.length < 2) return;
+    if (selected.some((row, index) => index && selected[index - 1].end !== row.start)) {
+      announce('서로 이어진 시간칸을 선택해 주세요.', true); return;
     }
-    const editing = state.editing;
-    const savedDate = $('plan-date').value;
-    if (editing) items[0].version = editing.version;
-    await mutate(() => request(editing ? `/api/schedules/${encodeURIComponent(editing.id)}` : '/api/schedules/batch', {
-      method: editing ? 'PUT' : 'POST', body: editing ? items[0] : { items }
-    }), editing ? '일정을 수정했습니다.' : `${items.length}개의 일정을 시간표에 저장했습니다.`, () => {
-      state.selectedDate = savedDate; state.month = savedDate.slice(0, 7); $('search').value = '';
-      resetForm(); activateTab($('schedule-tab'));
-    });
-  });
-  for (const id of ['plan-date', 'reminder-offset', 'custom-minutes']) $(id).addEventListener('input', () => {
+    const title = [...new Set(selected.map(row => row.title.value.trim()).filter(Boolean))].join(' / ');
+    const description = [...new Set(selected.map(row => row.description.value.trim()).filter(Boolean))].join('\n');
+    if (title.length > 200 || description.length > 2000) { announce('묶을 내용이 너무 깁니다. 할 일은 200자, 메모는 2,000자 이내로 줄여주세요.', true); return; }
+    const combined = { ...snapshot(selected[0]), end: selected.at(-1).end, title, description, checked: false };
+    renderDraft(state.draftRows.flatMap(row => row === selected[0] ? [combined] : selected.includes(row) ? [] : [snapshot(row)]));
     state.dirty = true;
-    for (const row of state.draftRows) row.time.setCustomValidity('');
-    updatePreview();
+    announce(`${rangeLabel(combined)} · ${durationLabel(combined.end - combined.start)} 일정으로 묶었습니다. 저장하면 시작 10분 전에 한 번 알립니다.`);
   });
-  $('add-row').addEventListener('click', () => { state.dirty = true; addRow({}, true); });
-  $('cancel-edit').addEventListener('click', async () => { if (await mayReplaceDraft()) resetForm(); });
+  $('plan-date').addEventListener('change', async () => {
+    const day = $('plan-date').value;
+    if (!day || !await mayReplaceDraft()) { $('plan-date').value = state.editorDate; return; }
+    await loadEditor(day);
+  });
+  $('cancel-edit').addEventListener('click', async () => { if (await mayReplaceDraft()) await loadEditor(state.editorDate); });
   $('plan-day').addEventListener('click', async () => {
     if (!await mayReplaceDraft()) return;
-    resetForm(); state.draftRows[0].title.focus();
-    $('schedule-form').scrollIntoView({ block: 'center', behavior: 'auto' });
+    await loadEditor(state.selectedDate); state.draftRows[0]?.title.focus();
+    $('schedule-form').scrollIntoView({ block: 'start', behavior: 'auto' });
   });
   $('refresh').addEventListener('click', refresh);
   $('search').addEventListener('input', renderSchedules);
@@ -562,5 +599,6 @@
     });
   });
   state.selectedDate = todayKey(); state.month = state.selectedDate.slice(0, 7);
-  resetForm(); renderStats(); refresh();
+  resetForm(); renderStats();
+  refresh();
 })();

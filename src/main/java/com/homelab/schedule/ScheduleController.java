@@ -18,6 +18,7 @@ class ScheduleController {
  Object createBatch(@Valid @RequestBody Batch batch) { return Map.of("ids",service.createBatch(batch.items())); }
  @PostMapping("/schedules") @ResponseStatus(org.springframework.http.HttpStatus.CREATED)
  Object create(@Valid @RequestBody ScheduleService.Input in) { return Map.of("id",service.create(in)); }
+ @PutMapping("/schedules/day") void saveDay(@Valid @RequestBody ScheduleService.DayPlan plan) { service.saveDay(plan); }
  @PutMapping("/schedules/{id}") void update(@PathVariable UUID id,@Valid @RequestBody ScheduleService.Input in) { service.update(id,in); }
  @DeleteMapping("/schedules/{id}") void delete(@PathVariable UUID id,@RequestParam long version) { service.delete(id,version); }
  @GetMapping("/notifications") Object history() { return service.history(); }

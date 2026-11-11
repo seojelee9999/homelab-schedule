@@ -20,7 +20,7 @@
           <div class="day-navigation"><button id="previous-day" class="secondary icon-button" aria-label="이전 날" type="button">‹</button><label class="day-picker"><span id="selected-day-label">오늘</span><input id="selected-date" type="date" required aria-label="조회할 날짜"></label><button id="next-day" class="secondary icon-button" aria-label="다음 날" type="button">›</button><button id="go-today" class="secondary compact" type="button">오늘</button></div>
           <label class="search"><span class="sr-only">선택한 날의 일정 검색</span><input id="search" type="search" placeholder="이날의 제목이나 메모 검색"></label>
           <p id="list-summary" class="list-summary" aria-live="polite">일정을 불러오는 중입니다.</p>
-          <div class="timeline-heading" aria-hidden="true"><span>시작 시간</span><span>해야 할 일</span></div>
+          <div class="timeline-heading" aria-hidden="true"><span>일정 시간</span><span>해야 할 일</span></div>
           <div id="schedule-list" class="items" aria-busy="true"></div>
           <button class="secondary add-day" id="plan-day" type="button">＋ 이날 일정 작성</button>
         </div>
@@ -35,19 +35,19 @@
       </section>
       <section class="panel editor" aria-labelledby="form-title">
         <div class="section-heading"><div><p class="eyebrow">BUILD YOUR DAY</p><h2 id="form-title">하루 시간표 작성</h2></div><span class="step-mark" aria-hidden="true">＋</span></div>
-        <p class="muted">날짜는 한 번만, 할 일은 시간별로 적어주세요.</p>
+        <p class="muted">00시부터 24시까지, 할 일을 시간칸에 적어주세요. 연속된 칸을 선택하면 하나로 묶을 수 있어요.</p>
         <form id="schedule-form"><fieldset id="form-fields">
           <label for="plan-date">일정 날짜 <span class="required">필수</span></label><input id="plan-date" type="date" required>
-          <div class="table-wrap"><table class="plan-table"><caption class="sr-only">시간별 일정 입력표. 모든 행은 선택한 날짜에 등록됩니다.</caption><thead><tr><th scope="col">시작 시간</th><th scope="col">할 일 · 메모</th><th scope="col"><span class="sr-only">행 삭제</span></th></tr></thead><tbody id="plan-rows"></tbody></table></div>
-          <button id="add-row" class="secondary add-row" type="button">＋ 시간 추가</button>
-          <label for="reminder-offset">Discord 알림</label><select id="reminder-offset"><option value="0">일정 시작 시각에</option><option value="10" selected>10분 전에</option><option value="30">30분 전에</option><option value="60">1시간 전에</option><option value="1440">하루 전에</option><option value="custom">직접 지정</option></select>
-          <div id="custom-reminder" hidden><label for="custom-minutes">일정 시작 몇 분 전인가요?</label><input id="custom-minutes" type="number" min="0" max="525600" step="1" value="15"><p class="field-help">60 = 1시간 전 · 1,440 = 하루 전</p></div>
-          <p id="reminder-help" class="field-help">모든 행에 적용됩니다. 날짜가 바뀌어도 알림 시각을 자동 계산해요.</p>
+          <div class="block-toolbar"><button id="merge-rows" class="secondary compact" type="button">선택한 시간 묶기</button><span id="selection-count" aria-live="polite">선택한 시간 없음</span></div>
+          <p class="field-help">예: 02–03시와 03–04시를 선택하면 02–04시, 2시간 일정이 됩니다. 빈 칸은 저장하지 않습니다.</p>
+          <div id="editor-status" class="field-help" role="status" aria-live="polite"></div>
+          <div class="table-wrap"><table class="plan-table"><caption class="sr-only">00시부터 24시까지 시간별 일정 입력표. 체크한 연속 시간칸을 묶을 수 있습니다.</caption><thead><tr><th scope="col">선택 · 시간</th><th scope="col">할 일 · 메모</th><th scope="col"><span class="sr-only">시간칸 관리</span></th></tr></thead><tbody id="plan-rows"></tbody></table></div>
+          <div class="delivery-note"><p><strong>Discord 자동 알림 · 서울 시간</strong><br>매일 오전 6시 · 그날 일정 전체<br>각 일정 시작 10분 전 · 묶인 일정은 한 번만<br>이미 지난 알림 시각은 발송하지 않습니다.</p></div>
           <p id="reminder-preview" class="reminder-preview" aria-live="polite"></p>
-          <div id="edit-note" class="inline-note" hidden>수정 내용을 저장하면 알림 예약도 갱신됩니다.</div>
-          <div class="form-actions"><button class="primary" id="save" type="submit">시간표 저장</button><button id="cancel-edit" class="secondary" type="button" hidden>수정 취소</button></div>
+          <div id="edit-note" class="inline-note" hidden>이 날짜의 시간표를 편집하고 있습니다. 빈 칸으로 지운 일정은 저장할 때 삭제됩니다.</div>
+          <div class="form-actions"><button class="primary" id="save" type="submit">시간표 저장</button><button id="cancel-edit" class="secondary" type="button" hidden>작성표 다시 불러오기</button></div>
         </fieldset></form>
-        <details class="discord-preview"><summary>Discord 알림 미리보기</summary><div class="discord-card"><span class="discord-author">차곡 · 일정 알림</span><strong id="discord-preview-title">09:00 · 해야 할 일</strong><span id="discord-preview-date">서울 시간 기준</span><p>할 일을 시작 시간과 함께 알려드려요.</p></div><p class="field-help">각 일정의 예약 시각에 개별 알림이 발송됩니다.</p></details>
+        <details class="discord-preview"><summary>Discord 알림 미리보기</summary><div class="discord-card"><span class="discord-author">차곡 · 일정 알림</span><strong id="discord-preview-title">09:00–10:00 · 해야 할 일</strong><span id="discord-preview-date">서울 시간 기준</span><p>할 일과 시작·종료 시간을 함께 알려드려요.</p></div><p class="field-help">매일 오전 6시 전체 일정, 각 일정 시작 10분 전에 알림이 발송됩니다.</p></details>
       </section>
     </div>
     <footer><span class="footer-brand">차곡</span><span>하루를 채우는 작은 계획.</span><span>Asia/Seoul</span></footer>
